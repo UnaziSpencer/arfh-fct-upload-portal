@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Env
+.env
+
+# Local DB
+backend/app_data.db
+
+# Google credentials (VERY IMPORTANT)
+backend/data/service-account.json
+
+# OS
+.DS_Store
+Thumbs.db
