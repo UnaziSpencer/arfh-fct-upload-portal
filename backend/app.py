@@ -542,25 +542,106 @@ def build_preview_payload_for_row(source_blocks: Dict[str, Any], matched_row: in
     return preview
 
 
+def column_letter_to_number(col: str) -> int:
+    number = 0
+    for char in col.upper():
+        number = number * 26 + (ord(char) - ord("A") + 1)
+    return number
+
+
+def column_number_to_letter(number: int) -> str:
+    letters = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def split_cell_ref(cell_ref: str) -> Tuple[str, int]:
+    letters = "".join(ch for ch in cell_ref if ch.isalpha())
+    digits = "".join(ch for ch in cell_ref if ch.isdigit())
+    return letters, int(digits)
+
+
+def compact_cell_dict_to_row_update(cell_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts a dict like {M12: 1, N12: 2, O12: 3} into one row update:
+    {range: M12:O12, values: [[1, 2, 3]]}
+
+    This avoids sending one Google API call per cell. The previous per-cell method
+    could write attendance/screened, then slow down or stop before the rest.
+    """
+    parsed = []
+    for cell, value in cell_dict.items():
+        col, row = split_cell_ref(cell)
+        parsed.append((column_letter_to_number(col), col, row, value))
+
+    if not parsed:
+        return {"range": "", "values": [[]]}
+
+    rows = {item[2] for item in parsed}
+    if len(rows) != 1:
+        # Fallback, though our mapping is all same-row writes.
+        first_cell = next(iter(cell_dict.keys()))
+        return {"range": first_cell, "values": [[cell_dict[first_cell]]]}
+
+    row_number = parsed[0][2]
+    parsed.sort(key=lambda x: x[0])
+    start_num = parsed[0][0]
+    end_num = parsed[-1][0]
+    start_col = column_number_to_letter(start_num)
+    end_col = column_number_to_letter(end_num)
+
+    value_lookup = {item[0]: item[3] for item in parsed}
+    values = [value_lookup.get(col_num, "") for col_num in range(start_num, end_num + 1)]
+
+    return {
+        "range": f"{start_col}{row_number}:{end_col}{row_number}",
+        "values": [values],
+    }
+
+
 def flatten_preview_to_updates(preview_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Builds compact row-range updates instead of hundreds of individual cell updates.
+    This keeps the working mapping but makes the deployed version reliable.
+    """
     updates: List[Dict[str, Any]] = []
 
     def walk(obj):
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, dict):
-                    walk(value)
-                else:
-                    updates.append({"range": key, "values": [[value]]})
+        if not isinstance(obj, dict):
+            return
+
+        # Leaf dictionary: keys are cell references like M12, N12, O12.
+        if obj and all(isinstance(k, str) and any(ch.isdigit() for ch in k) for k in obj.keys()):
+            updates.append(compact_cell_dict_to_row_update(obj))
+            return
+
+        for value in obj.values():
+            if isinstance(value, dict):
+                walk(value)
 
     walk(preview_payload)
-    return updates
+    return [u for u in updates if u.get("range")]
 
 
 def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
-    successful = 0
+    """
+    First attempts a fast batch update. If Google blocks one protected range,
+    it falls back to range-by-range updates so the rest can still write.
+    """
     failed: List[Dict[str, str]] = []
 
+    if not updates:
+        return 0, failed
+
+    try:
+        worksheet.batch_update(updates, value_input_option="USER_ENTERED")
+        return len(updates), failed
+    except Exception as batch_exc:
+        print(f"BATCH UPDATE FAILED, FALLING BACK TO RANGE UPDATES: {batch_exc}")
+
+    successful = 0
     for update in updates:
         cell_range = update["range"]
         values = update["values"]
