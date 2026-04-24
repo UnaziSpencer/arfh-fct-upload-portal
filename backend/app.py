@@ -9,26 +9,29 @@ import gspread
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.oauth2.service_account import Credentials
-from gspread.exceptions import APIError
 
 from database import init_db, get_connection
 
-app = FastAPI(title="ARFH FCT Upload Backend", version="0.1.0")
+
+app = FastAPI(title="ARFH FCT Upload Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten later to your Vercel domain only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 @app.on_event("startup")
 def startup_event():
     init_db()
 
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+
 LOCAL_SERVICE_ACCOUNT_FILE = DATA_DIR / "service-account.json"
 RENDER_SECRET_FILE = Path("/etc/secrets/service-account.json")
 
@@ -37,6 +40,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+
+# IMPORTANT:
+# Q1 is your working 2026 Q1 master workbook ID.
+# Replace Q2/Q3/Q4 IDs when those master sheets are ready.
 MASTER_WORKBOOK_IDS = {
     ("2026", "Q1"): "1WO6ck6-ZDe-4tozRkvG-bj0q7B7KgBGm0Ar7AebESIo",
     ("2026", "Q2"): "PASTE_YOUR_REAL_2026_Q2_WORKBOOK_ID_HERE",
@@ -44,38 +51,42 @@ MASTER_WORKBOOK_IDS = {
     ("2026", "Q4"): "PASTE_YOUR_REAL_2026_Q4_WORKBOOK_ID_HERE",
 }
 
+
 MONTH_TO_TAB = {
-    "January": "Jan", "Jan": "Jan",
-    "February": "Feb", "Feb": "Feb",
-    "March": "Mar", "Mar": "Mar",
-    "April": "Apr", "Apr": "Apr",
-    "May": "May",
-    "June": "Jun", "Jun": "Jun",
-    "July": "Jul", "Jul": "Jul",
-    "August": "Aug", "Aug": "Aug",
-    "September": "Sep", "Sep": "Sep",
-    "October": "Oct", "Oct": "Oct",
-    "November": "Nov", "Nov": "Nov",
-    "December": "Dec", "Dec": "Dec",
+    "January": "Jan", "Jan": "Jan", "jan": "Jan",
+    "February": "Feb", "Feb": "Feb", "feb": "Feb",
+    "March": "Mar", "Mar": "Mar", "mar": "Mar",
+    "April": "Apr", "Apr": "Apr", "apr": "Apr",
+    "May": "May", "may": "May",
+    "June": "Jun", "Jun": "Jun", "jun": "Jun",
+    "July": "Jul", "Jul": "Jul", "jul": "Jul",
+    "August": "Aug", "Aug": "Aug", "aug": "Aug",
+    "September": "Sep", "Sep": "Sep", "sep": "Sep",
+    "October": "Oct", "Oct": "Oct", "oct": "Oct",
+    "November": "Nov", "Nov": "Nov", "nov": "Nov",
+    "December": "Dec", "Dec": "Dec", "dec": "Dec",
 }
+
 
 MONTH_TO_QUARTER = {
-    "January": "Q1", "Jan": "Q1",
-    "February": "Q1", "Feb": "Q1",
-    "March": "Q1", "Mar": "Q1",
-    "April": "Q2", "Apr": "Q2",
-    "May": "Q2",
-    "June": "Q2", "Jun": "Q2",
-    "July": "Q3", "Jul": "Q3",
-    "August": "Q3", "Aug": "Q3",
-    "September": "Q3", "Sep": "Q3",
-    "October": "Q4", "Oct": "Q4",
-    "November": "Q4", "Nov": "Q4",
-    "December": "Q4", "Dec": "Q4",
+    "January": "Q1", "Jan": "Q1", "jan": "Q1",
+    "February": "Q1", "Feb": "Q1", "feb": "Q1",
+    "March": "Q1", "Mar": "Q1", "mar": "Q1",
+    "April": "Q2", "Apr": "Q2", "apr": "Q2",
+    "May": "Q2", "may": "Q2",
+    "June": "Q2", "Jun": "Q2", "jun": "Q2",
+    "July": "Q3", "Jul": "Q3", "jul": "Q3",
+    "August": "Q3", "Aug": "Q3", "aug": "Q3",
+    "September": "Q3", "Sep": "Q3", "sep": "Q3",
+    "October": "Q4", "Oct": "Q4", "oct": "Q4",
+    "November": "Q4", "Nov": "Q4", "nov": "Q4",
+    "December": "Q4", "Dec": "Q4", "dec": "Q4",
 }
 
-# RAW / INPUT CELLS ONLY. TOTAL COLUMNS ARE INTENTIONALLY SKIPPED.
-# child_tb_notification is intentionally omitted from upload because it is formula/protected.
+
+# Mapping follows the working master automation structure.
+# Child TB notification is intentionally not written to the master sheet.
+# Screened TBA has been added as requested, but protected cells are handled safely during upload.
 TARGET_MAP = {
     "attendance": {
         "facility":  ["M", "N", "O", "P", "Q", "R"],
@@ -89,7 +100,7 @@ TARGET_MAP = {
         "pmv":       ["BJ", "BK", "BL", "BM", "BN", "BO"],
         "community": ["BQ", "BR", "BS", "BT", "BU", "BV"],
         "lab":       ["BX", "BY", "BZ", "CA", "CB", "CC"],
-        "tba":       ["CD", "CE", "CF", "CG", "CH", "CI"],  # corrected addition
+        "tba":       ["CD", "CE", "CF", "CG", "CH", "CI"],
     },
     "presumptive": {
         "facility":  ["CS", "CT", "CU", "CV", "CW", "CX"],
@@ -164,39 +175,51 @@ TARGET_MAP = {
 
 
 def get_target_tab_from_month(report_month: str) -> str:
-    tab = MONTH_TO_TAB.get(str(report_month).strip())
+    report_month = str(report_month).strip()
+    tab = MONTH_TO_TAB.get(report_month)
     if not tab:
-        raise HTTPException(status_code=400, detail=f"No tab mapping found for month: {report_month}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"No master-sheet tab mapping found for month: {report_month}",
+        )
     return tab
 
 
 def get_quarter_from_month(report_month: str) -> str:
-    quarter = MONTH_TO_QUARTER.get(str(report_month).strip())
+    report_month = str(report_month).strip()
+    quarter = MONTH_TO_QUARTER.get(report_month)
     if not quarter:
-        raise HTTPException(status_code=400, detail=f"Unsupported report month: {report_month}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported report month: {report_month}",
+        )
     return quarter
 
 
 def get_master_workbook_id(report_year: str, report_month: str) -> str:
     quarter = get_quarter_from_month(report_month)
     workbook_id = MASTER_WORKBOOK_IDS.get((str(report_year), quarter))
+
     if not workbook_id or workbook_id.startswith("PUT_") or workbook_id.startswith("PASTE_"):
         raise HTTPException(
             status_code=400,
             detail=f"Master workbook ID is not configured for year {report_year} and quarter {quarter}.",
         )
+
     return workbook_id
 
 
 def get_gspread_client():
     env_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
     try:
         if env_json:
-            service_account_info = json.loads(env_json)
-            creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+            creds_info = json.loads(env_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
             return gspread.authorize(creds)
 
         service_account_file = RENDER_SECRET_FILE if RENDER_SECRET_FILE.exists() else LOCAL_SERVICE_ACCOUNT_FILE
+
         if not service_account_file.exists():
             raise HTTPException(
                 status_code=500,
@@ -205,41 +228,93 @@ def get_gspread_client():
                     f"or provide local file at {LOCAL_SERVICE_ACCOUNT_FILE}"
                 ),
             )
+
         creds = Credentials.from_service_account_file(str(service_account_file), scopes=SCOPES)
         return gspread.authorize(creds)
+
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Google authentication failed: {str(exc)}")
+        text = str(exc)
+        network_markers = [
+            "oauth2.googleapis.com",
+            "sheets.googleapis.com",
+            "www.googleapis.com",
+            "NameResolutionError",
+            "getaddrinfo failed",
+            "Max retries exceeded",
+            "Failed to resolve",
+        ]
+        if any(marker in text for marker in network_markers):
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot connect to Google services right now. Check internet, DNS, VPN, firewall, or try another network.",
+            )
+        raise HTTPException(status_code=500, detail=f"Google authentication failed: {text}")
 
 
 def open_master_sheet(report_year: str, report_month: str):
     target_tab = get_target_tab_from_month(report_month)
     workbook_id = get_master_workbook_id(report_year, report_month)
     client = get_gspread_client()
+
     try:
         workbook = client.open_by_key(workbook_id)
-        worksheet = workbook.worksheet(target_tab)
-        return workbook, worksheet, workbook_id, target_tab
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Unable to open master workbook/tab: {str(exc)}")
+        text = str(exc)
+        network_markers = [
+            "oauth2.googleapis.com",
+            "sheets.googleapis.com",
+            "www.googleapis.com",
+            "NameResolutionError",
+            "getaddrinfo failed",
+            "Max retries exceeded",
+            "Failed to resolve",
+        ]
+        if any(marker in text for marker in network_markers):
+            raise HTTPException(
+                status_code=503,
+                detail="Google Sheets is temporarily unreachable. Check network, DNS, VPN, firewall, or try another network.",
+            )
+        raise HTTPException(status_code=500, detail=f"Unable to open master workbook by key. {text}")
+
+    try:
+        worksheet = workbook.worksheet(target_tab)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Worksheet/tab '{target_tab}' not found in selected master workbook. {str(exc)}",
+        )
+
+    return workbook, worksheet, workbook_id, target_tab
 
 
-def normalize_text(value: str) -> str:
+def normalize_text(value: Any) -> str:
     if value is None:
         return ""
     return " ".join(str(value).strip().lower().split())
 
 
-def clean_number(val):
+def clean_number(val: Any) -> float:
     if pd.isna(val):
         return 0
+
     if isinstance(val, str):
         val = val.strip().replace(",", "")
         if val == "":
             return 0
+
     num = pd.to_numeric(val, errors="coerce")
     return 0 if pd.isna(num) else float(num)
+
+
+def format_number_for_sheet(val: Any) -> Any:
+    try:
+        if float(val).is_integer():
+            return int(val)
+        return float(val)
+    except Exception:
+        return val
 
 
 def save_upload_temporarily(upload_file: UploadFile) -> str:
@@ -252,16 +327,19 @@ def save_upload_temporarily(upload_file: UploadFile) -> str:
 def find_facility_row(worksheet, facility_name: str) -> Optional[int]:
     sheet_values = worksheet.get_all_values()
     target = normalize_text(facility_name)
+
     for r in range(5, len(sheet_values) + 1):
         row = sheet_values[r - 1]
         facility_val = normalize_text(row[4]) if len(row) > 4 else ""
         if facility_val == target:
             return r
+
     return None
 
 
 def load_source_df(file_path: str, source_month_sheet: str) -> pd.DataFrame:
     source_tab = get_target_tab_from_month(source_month_sheet)
+
     try:
         return pd.read_excel(file_path, sheet_name=source_tab, header=None)
     except Exception:
@@ -276,7 +354,11 @@ def extract_grouped(df: pd.DataFrame, male_row: int, female_row: int) -> List[fl
     female_0_4 = clean_number(df.iloc[female_row, 3]) + clean_number(df.iloc[female_row, 4])
     female_5_14 = clean_number(df.iloc[female_row, 5]) + clean_number(df.iloc[female_row, 6])
     female_15_plus = sum(clean_number(df.iloc[female_row, c]) for c in range(7, 18))
-    return [male_0_4, male_5_14, male_15_plus, female_0_4, female_5_14, female_15_plus]
+
+    return [
+        male_0_4, male_5_14, male_15_plus,
+        female_0_4, female_5_14, female_15_plus,
+    ]
 
 
 def grouped_sum(vals: List[float]) -> float:
@@ -294,8 +376,10 @@ def sum_many_pair_totals(df: pd.DataFrame, row_pairs: List[Tuple[int, int]]) -> 
 def under15_total(df: pd.DataFrame, male_row: int, female_row: int) -> float:
     total = 0
     for row in [male_row, female_row]:
-        for c in [3, 4, 5, 6]:
-            total += clean_number(df.iloc[row, c])
+        total += clean_number(df.iloc[row, 3])
+        total += clean_number(df.iloc[row, 4])
+        total += clean_number(df.iloc[row, 5])
+        total += clean_number(df.iloc[row, 6])
     return total
 
 
@@ -348,11 +432,11 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "tba":       extract_grouped(df, 93, 94),
         },
         "diagnosed_mode": {
-            "mtb_detected": sum_many_pair_totals(df, [(101,102),(120,121),(139,140),(158,159),(177,178)]),
-            "afb": sum_many_pair_totals(df, [(104,105),(123,124),(142,143),(161,162),(180,181)]),
-            "tblamp": sum_many_pair_totals(df, [(107,108),(126,127),(145,146),(164,165),(183,184)]),
-            "trunat": sum_many_pair_totals(df, [(110,111),(129,130),(148,149),(167,168),(186,187)]),
-            "lf_lam_clinical_chestxray": sum_many_pair_totals(df, [(113,114),(132,133),(151,152),(170,171),(189,190)]),
+            "mtb_detected": sum_many_pair_totals(df, [(101, 102), (120, 121), (139, 140), (158, 159), (177, 178)]),
+            "afb":          sum_many_pair_totals(df, [(104, 105), (123, 124), (142, 143), (161, 162), (180, 181)]),
+            "tblamp":       sum_many_pair_totals(df, [(107, 108), (126, 127), (145, 146), (164, 165), (183, 184)]),
+            "trunat":       sum_many_pair_totals(df, [(110, 111), (129, 130), (148, 149), (167, 168), (186, 187)]),
+            "lf_lam_clinical_chestxray": sum_many_pair_totals(df, [(113, 114), (132, 133), (151, 152), (170, 171), (189, 190)]),
             "clinical": 0,
             "pdx": 0,
             "chest_xray": 0,
@@ -364,13 +448,14 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "lab":       extract_grouped(df, 224, 225),
             "tba":       extract_grouped(df, 227, 228),
         },
-        "child_tb_notification": under15_total(df, 234, 235),  # kept for summary only, NOT uploaded
+        # Kept for validation/reference only; never written to master sheet.
+        "child_tb_notification": under15_total(df, 234, 235),
         "all_notified_xpert": sum_pair_total(df, 241, 242),
         "notified_breakdown": {
             "mtb_detected": sum_pair_total(df, 241, 242),
-            "afb": sum_pair_total(df, 244, 245),
-            "tblamp": sum_pair_total(df, 247, 248),
-            "trunat": sum_pair_total(df, 250, 251),
+            "afb":          sum_pair_total(df, 244, 245),
+            "tblamp":       sum_pair_total(df, 247, 248),
+            "trunat":       sum_pair_total(df, 250, 251),
             "lf_lam_clinical_chestxray": sum_pair_total(df, 253, 254),
             "clinical": 0,
             "pdx": 0,
@@ -387,8 +472,8 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "other": extract_grouped(df, 276, 277),
         },
         "hiv_status": {
-            "negative": extract_grouped(df, 283, 284),
             "positive": extract_grouped(df, 280, 281),
+            "negative": extract_grouped(df, 283, 284),
             "unknown": extract_grouped(df, 286, 287),
         },
         "cpt": extract_grouped(df, 290, 291),
@@ -401,73 +486,147 @@ def validation_summary_from_source_blocks(source_blocks: Dict[str, Any]) -> Dict
         "attendance_total": sum(sum(v) for v in source_blocks["attendance"].values()),
         "screened_total": sum(sum(v) for v in source_blocks["screened"].values()),
         "presumptive_total": sum(sum(v) for v in source_blocks["presumptive"].values()),
-        "evaluated_total": sum(source_blocks["evaluated"].values()),
         "diagnosed_total": sum(sum(v) for v in source_blocks["diagnosed"].values()),
         "notified_total": sum(sum(v) for v in source_blocks["notified"].values()),
-        "child_tb_notification_total": source_blocks["child_tb_notification"],
-        "all_notified_xpert_total": source_blocks["all_notified_xpert"],
-        "followup_total": sum(source_blocks["followup"].values()),
-        "category_started_total": sum(sum(v) for v in source_blocks["category_started"].values()),
-        "hiv_status_total": sum(sum(v) for v in source_blocks["hiv_status"].values()),
-        "cpt_total": sum(source_blocks["cpt"]),
-        "art_total": sum(source_blocks["art"]),
+        "child_tb_notification_total": source_blocks.get("child_tb_notification", 0),
     }
 
 
-def add_block_updates(updates: List[Dict[str, Any]], row: int, letters: List[str], values: List[float]):
-    for col, val in zip(letters, values):
-        updates.append({"range": f"{col}{row}", "values": [[val]]})
+def build_preview_payload_for_row(source_blocks: Dict[str, Any], matched_row: int) -> Dict[str, Any]:
+    preview: Dict[str, Any] = {}
+
+    for section_name in [
+        "attendance",
+        "screened",
+        "presumptive",
+        "diagnosed",
+        "notified",
+        "category_started",
+        "hiv_status",
+    ]:
+        preview[section_name] = {}
+        for provider, values in source_blocks[section_name].items():
+            letters = TARGET_MAP[section_name][provider]
+            preview[section_name][provider] = {
+                f"{col}{matched_row}": format_number_for_sheet(val)
+                for col, val in zip(letters, values)
+            }
+
+    preview["evaluated"] = {
+        f"{col}{matched_row}": format_number_for_sheet(source_blocks["evaluated"][key])
+        for key, col in TARGET_MAP["evaluated"].items()
+    }
+
+    preview["diagnosed_mode"] = {
+        f"{col}{matched_row}": format_number_for_sheet(source_blocks["diagnosed_mode"][key])
+        for key, col in TARGET_MAP["diagnosed_mode"].items()
+    }
+
+    # Child TB notification intentionally excluded from write payload.
+    # It is auto-derived in the master sheet.
+
+    preview["all_notified_xpert"] = {
+        f"{TARGET_MAP['all_notified_xpert']}{matched_row}": format_number_for_sheet(source_blocks["all_notified_xpert"])
+    }
+
+    preview["notified_breakdown"] = {
+        f"{col}{matched_row}": format_number_for_sheet(source_blocks["notified_breakdown"][key])
+        for key, col in TARGET_MAP["notified_breakdown"].items()
+    }
+
+    preview["followup"] = {
+        f"{col}{matched_row}": format_number_for_sheet(source_blocks["followup"][key])
+        for key, col in TARGET_MAP["followup"].items()
+    }
+
+    preview["cpt"] = {
+        f"{col}{matched_row}": format_number_for_sheet(val)
+        for col, val in zip(TARGET_MAP["cpt"], source_blocks["cpt"])
+    }
+
+    preview["art"] = {
+        f"{col}{matched_row}": format_number_for_sheet(val)
+        for col, val in zip(TARGET_MAP["art"], source_blocks["art"])
+    }
+
+    return preview
 
 
-def add_single_update(updates: List[Dict[str, Any]], row: int, col: str, value: float):
-    updates.append({"range": f"{col}{row}", "values": [[value]]})
-
-
-def build_updates(source_blocks: Dict[str, Any], matched_row: int) -> List[Dict[str, Any]]:
+def flatten_preview_to_updates(preview_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     updates: List[Dict[str, Any]] = []
 
-    for section_name in ["attendance", "screened", "presumptive", "diagnosed", "notified"]:
-        for provider, letters in TARGET_MAP[section_name].items():
-            add_block_updates(updates, matched_row, letters, source_blocks[section_name][provider])
+    def walk(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, dict):
+                    walk(value)
+                else:
+                    updates.append({"range": key, "values": [[value]]})
 
-    for key, col in TARGET_MAP["evaluated"].items():
-        add_single_update(updates, matched_row, col, source_blocks["evaluated"][key])
-
-    for key, col in TARGET_MAP["diagnosed_mode"].items():
-        add_single_update(updates, matched_row, col, source_blocks["diagnosed_mode"][key])
-
-    # child_tb_notification intentionally omitted from upload payload
-
-    add_single_update(updates, matched_row, TARGET_MAP["all_notified_xpert"], source_blocks["all_notified_xpert"])
-
-    for key, col in TARGET_MAP["notified_breakdown"].items():
-        add_single_update(updates, matched_row, col, source_blocks["notified_breakdown"][key])
-
-    for key, col in TARGET_MAP["followup"].items():
-        add_single_update(updates, matched_row, col, source_blocks["followup"][key])
-
-    for category, letters in TARGET_MAP["category_started"].items():
-        add_block_updates(updates, matched_row, letters, source_blocks["category_started"][category])
-
-    for status, letters in TARGET_MAP["hiv_status"].items():
-        add_block_updates(updates, matched_row, letters, source_blocks["hiv_status"][status])
-
-    add_block_updates(updates, matched_row, TARGET_MAP["cpt"], source_blocks["cpt"])
-    add_block_updates(updates, matched_row, TARGET_MAP["art"], source_blocks["art"])
-
+    walk(preview_payload)
     return updates
 
 
-def build_preview_payload(updates: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {u["range"]: u["values"][0][0] for u in updates}
+def is_protected_cell_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "protected cell" in text.lower()
+        or "protected range" in text.lower()
+        or "edit a protected cell" in text.lower()
+    )
 
 
-def log_upload(facility_name: str, lga: str, state: str, report_year: str, report_month: str,
-               target_tab: str, quarter: str, workbook_id: str, matched_row: int,
-               uploaded_filename: str, updated_cells: int, status: str, message: str,
-               summary: Dict[str, float]):
+def safe_batch_update(worksheet, updates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    First tries normal batch update. If Google rejects the batch because one cell is protected,
+    retries item-by-item so editable cells are still uploaded and protected cells are reported.
+    """
+    if not updates:
+        return {"updated_count": 0, "skipped": []}
+
+    try:
+        worksheet.batch_update(updates, value_input_option="USER_ENTERED")
+        return {"updated_count": len(updates), "skipped": []}
+    except Exception as exc:
+        if not is_protected_cell_error(exc):
+            raise HTTPException(status_code=500, detail=f"Google Sheets write error: {str(exc)}")
+
+    updated_count = 0
+    skipped = []
+
+    for item in updates:
+        cell_range = item["range"]
+        try:
+            worksheet.update(cell_range, item["values"], value_input_option="USER_ENTERED")
+            updated_count += 1
+        except Exception as cell_exc:
+            if is_protected_cell_error(cell_exc):
+                skipped.append({"range": cell_range, "reason": "protected_cell"})
+                continue
+            skipped.append({"range": cell_range, "reason": str(cell_exc)})
+
+    return {"updated_count": updated_count, "skipped": skipped}
+
+
+def log_upload(
+    facility_name: str,
+    lga: str,
+    state: str,
+    report_year: str,
+    report_month: str,
+    target_tab: str,
+    quarter: str,
+    workbook_id: str,
+    matched_row: int,
+    uploaded_filename: str,
+    updated_cells: int,
+    status: str,
+    message: str,
+    summary: Dict[str, float],
+):
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute(
         """
         INSERT INTO upload_logs (
@@ -477,13 +636,27 @@ def log_upload(facility_name: str, lga: str, state: str, report_year: str, repor
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            facility_name, lga, state, report_year, report_month, target_tab, quarter,
-            workbook_id, matched_row, uploaded_filename, updated_cells, status, message,
-            summary.get("attendance_total"), summary.get("screened_total"),
-            summary.get("presumptive_total"), summary.get("diagnosed_total"),
+            facility_name,
+            lga,
+            state,
+            report_year,
+            report_month,
+            target_tab,
+            quarter,
+            workbook_id,
+            matched_row,
+            uploaded_filename,
+            updated_cells,
+            status,
+            message,
+            summary.get("attendance_total"),
+            summary.get("screened_total"),
+            summary.get("presumptive_total"),
+            summary.get("diagnosed_total"),
             summary.get("notified_total"),
         ),
     )
+
     conn.commit()
     conn.close()
 
@@ -499,43 +672,15 @@ def get_upload_logs():
     cur = conn.cursor()
     rows = cur.execute(
         """
-        SELECT * FROM upload_logs
+        SELECT *
+        FROM upload_logs
         ORDER BY created_at DESC, id DESC
         LIMIT 30
         """
     ).fetchall()
     conn.close()
+
     return {"logs": [dict(row) for row in rows]}
-
-
-async def process_file_common(facility_name: str, lga: str, state: str, report_year: str,
-                              source_month_sheet: str, target_tab: str, report_type: str,
-                              spreadsheet_name: str, file: UploadFile):
-    temp_path = None
-    try:
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(report_year, source_month_sheet)
-        matched_row = find_facility_row(worksheet, facility_name)
-        if not matched_row:
-            raise HTTPException(status_code=404, detail=f"Facility '{facility_name}' not found in tab '{actual_target_tab}'.")
-
-        temp_path = save_upload_temporarily(file)
-        source_df = load_source_df(temp_path, source_month_sheet)
-        source_blocks = build_source_blocks(source_df)
-        updates = build_updates(source_blocks, matched_row)
-        summary = validation_summary_from_source_blocks(source_blocks)
-
-        return {
-            "worksheet": worksheet,
-            "workbook_id": workbook_id,
-            "actual_target_tab": actual_target_tab,
-            "matched_row": matched_row,
-            "source_blocks": source_blocks,
-            "updates": updates,
-            "summary": summary,
-        }
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
 
 
 @app.post("/api/preview")
@@ -550,28 +695,50 @@ async def preview(
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
 ):
+    temp_path = None
+
     try:
-        result = await process_file_common(facility_name, lga, state, report_year, source_month_sheet, target_tab, report_type, spreadsheet_name, file)
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+            report_year=report_year,
+            report_month=source_month_sheet,
+        )
+
+        matched_row = find_facility_row(worksheet, facility_name)
+        if not matched_row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Facility '{facility_name}' was not found in tab '{actual_target_tab}'.",
+            )
+
+        temp_path = save_upload_temporarily(file)
+        source_df = load_source_df(temp_path, source_month_sheet)
+        source_blocks = build_source_blocks(source_df)
+        preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
+        summary = validation_summary_from_source_blocks(source_blocks)
+
         return {
             "message": "Preview loaded successfully.",
             "facility_name": facility_name,
             "lga": lga,
             "state": state,
-            "target_tab": result["actual_target_tab"],
+            "target_tab": actual_target_tab,
             "report_year": report_year,
             "quarter": get_quarter_from_month(source_month_sheet),
-            "master_workbook_id": result["workbook_id"],
+            "master_workbook_id": workbook_id,
             "uploaded_filename": file.filename,
-            "matched_target_row": result["matched_row"],
-            "writes": build_preview_payload(result["updates"]),
-            "summary": result["summary"],
-            "omitted_from_upload": ["child_tb_notification"],
+            "matched_target_row": matched_row,
+            "writes": preview_payload,
+            "summary": summary,
         }
+
     except HTTPException:
         raise
     except Exception as exc:
         print("PREVIEW ERROR:", repr(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.post("/api/validate")
@@ -586,32 +753,53 @@ async def validate(
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
 ):
+    temp_path = None
+
     try:
-        result = await process_file_common(facility_name, lga, state, report_year, source_month_sheet, target_tab, report_type, spreadsheet_name, file)
-        summary = result["summary"]
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+            report_year=report_year,
+            report_month=source_month_sheet,
+        )
+
+        matched_row = find_facility_row(worksheet, facility_name)
+        if not matched_row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Facility '{facility_name}' not found in tab '{actual_target_tab}'.",
+            )
+
+        temp_path = save_upload_temporarily(file)
+        source_df = load_source_df(temp_path, source_month_sheet)
+        source_blocks = build_source_blocks(source_df)
+        summary = validation_summary_from_source_blocks(source_blocks)
+
         issues = []
         if summary["attendance_total"] <= 0:
             issues.append("Attendance total is zero or invalid.")
         if summary["screened_total"] <= 0:
             issues.append("Screened total is zero or invalid.")
-        if summary["presumptive_total"] < 0:
-            issues.append("Presumptive total is invalid.")
+        if summary["presumptive_total"] <= 0:
+            issues.append("Presumptive total is zero or invalid.")
+
         return {
             "status": "passed" if not issues else "failed",
             "message": "Validation completed successfully." if not issues else "Validation failed.",
-            "sheet_checked": result["actual_target_tab"],
-            "matched_target_row": result["matched_row"],
-            "master_workbook_id": result["workbook_id"],
+            "sheet_checked": actual_target_tab,
+            "matched_target_row": matched_row,
+            "master_workbook_id": workbook_id,
             "error_count": len(issues),
             "issues": issues,
             "summary": summary,
-            "omitted_from_upload": ["child_tb_notification"],
         }
+
     except HTTPException:
         raise
     except Exception as exc:
         print("VALIDATE ERROR:", repr(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.post("/api/upload")
@@ -626,14 +814,37 @@ async def upload(
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
 ):
+    temp_path = None
+
     try:
-        result = await process_file_common(facility_name, lga, state, report_year, source_month_sheet, target_tab, report_type, spreadsheet_name, file)
-        updates = result["updates"]
-        try:
-            if updates:
-                result["worksheet"].batch_update(updates, value_input_option="USER_ENTERED")
-        except APIError as exc:
-            raise HTTPException(status_code=400, detail=f"Google Sheets write error: {str(exc)}")
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+            report_year=report_year,
+            report_month=source_month_sheet,
+        )
+
+        matched_row = find_facility_row(worksheet, facility_name)
+        if not matched_row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Facility '{facility_name}' not found in tab '{actual_target_tab}'.",
+            )
+
+        temp_path = save_upload_temporarily(file)
+        source_df = load_source_df(temp_path, source_month_sheet)
+        source_blocks = build_source_blocks(source_df)
+        preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
+        updates = flatten_preview_to_updates(preview_payload)
+
+        write_result = safe_batch_update(worksheet, updates)
+        summary = validation_summary_from_source_blocks(source_blocks)
+
+        skipped = write_result["skipped"]
+        status = "uploaded" if not skipped else "uploaded_with_skips"
+        message = (
+            f"Upload successful for {facility_name}"
+            if not skipped
+            else f"Upload completed for {facility_name}, but {len(skipped)} protected/unwritable cells were skipped."
+        )
 
         log_upload(
             facility_name=facility_name,
@@ -641,30 +852,35 @@ async def upload(
             state=state,
             report_year=report_year,
             report_month=source_month_sheet,
-            target_tab=result["actual_target_tab"],
+            target_tab=actual_target_tab,
             quarter=get_quarter_from_month(source_month_sheet),
-            workbook_id=result["workbook_id"],
-            matched_row=result["matched_row"],
+            workbook_id=workbook_id,
+            matched_row=matched_row,
             uploaded_filename=file.filename,
-            updated_cells=len(updates),
-            status="uploaded",
-            message=f"Upload successful for {facility_name}",
-            summary=result["summary"],
+            updated_cells=write_result["updated_count"],
+            status=status,
+            message=message,
+            summary=summary,
         )
+
         return {
-            "status": "uploaded",
-            "message": f"Upload successful for {facility_name}",
-            "target_tab": result["actual_target_tab"],
+            "status": status,
+            "message": message,
+            "target_tab": actual_target_tab,
             "quarter": get_quarter_from_month(source_month_sheet),
-            "master_workbook_id": result["workbook_id"],
+            "master_workbook_id": workbook_id,
             "uploaded_filename": file.filename,
-            "matched_target_row": result["matched_row"],
-            "updated_cells": len(updates),
-            "summary": result["summary"],
-            "omitted_from_upload": ["child_tb_notification"],
+            "matched_target_row": matched_row,
+            "updated_cells": write_result["updated_count"],
+            "skipped_cells": skipped,
+            "summary": summary,
         }
+
     except HTTPException:
         raise
     except Exception as exc:
         print("UPLOAD ERROR:", repr(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
