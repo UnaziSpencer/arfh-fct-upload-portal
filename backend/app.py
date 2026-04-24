@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -11,11 +12,12 @@ from google.oauth2.service_account import Credentials
 
 from database import init_db, get_connection
 
+
 app = FastAPI(title="ARFH FCT Upload Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # later restrict to Vercel domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,21 +31,23 @@ def startup_event():
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-SERVICE_ACCOUNT_FILE = DATA_DIR / "service-account.json"
+
+LOCAL_SERVICE_ACCOUNT_FILE = DATA_DIR / "service-account.json"
+RENDER_SECRET_FILE = Path("/etc/secrets/service-account.json")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-# IMPORTANT:
-# Put your real workbook IDs here.
+
 MASTER_WORKBOOK_IDS = {
     ("2026", "Q1"): "1WO6ck6-ZDe-4tozRkvG-bj0q7B7KgBGm0Ar7AebESIo",
     ("2026", "Q2"): "PASTE_YOUR_REAL_2026_Q2_WORKBOOK_ID_HERE",
     ("2026", "Q3"): "PASTE_YOUR_REAL_2026_Q3_WORKBOOK_ID_HERE",
     ("2026", "Q4"): "PASTE_YOUR_REAL_2026_Q4_WORKBOOK_ID_HERE",
 }
+
 
 MONTH_TO_TAB = {
     "January": "Jan", "Jan": "Jan",
@@ -75,27 +79,28 @@ MONTH_TO_QUARTER = {
     "December": "Q4", "Dec": "Q4",
 }
 
+
 TARGET_MAP = {
     "attendance": {
-        "facility":  ["M", "N", "O", "P", "Q", "R"],
-        "pmv":       ["T", "U", "V", "W", "X", "Y"],
+        "facility": ["M", "N", "O", "P", "Q", "R"],
+        "pmv": ["T", "U", "V", "W", "X", "Y"],
         "community": ["AA", "AB", "AC", "AD", "AE", "AF"],
-        "lab":       ["AH", "AI", "AJ", "AK", "AL", "AM"],
-        "tba":       ["AO", "AP", "AQ", "AR", "AS", "AT"],
+        "lab": ["AH", "AI", "AJ", "AK", "AL", "AM"],
+        "tba": ["AO", "AP", "AQ", "AR", "AS", "AT"],
     },
     "screened": {
-        "facility":  ["BC", "BD", "BE", "BF", "BG", "BH"],
-        "pmv":       ["BJ", "BK", "BL", "BM", "BN", "BO"],
+        "facility": ["BC", "BD", "BE", "BF", "BG", "BH"],
+        "pmv": ["BJ", "BK", "BL", "BM", "BN", "BO"],
         "community": ["BQ", "BR", "BS", "BT", "BU", "BV"],
-        "lab":       ["BX", "BY", "BZ", "CA", "CB", "CC"],
-        "tba":       ["CD", "CE", "CF", "CG", "CH", "CI"],           
+        "lab": ["BX", "BY", "BZ", "CA", "CB", "CC"],
+        "tba": ["CD", "CE", "CF", "CG", "CH", "CI"],
     },
     "presumptive": {
-        "facility":  ["CS", "CT", "CU", "CV", "CW", "CX"],
-        "pmv":       ["CZ", "DA", "DB", "DC", "DD", "DE"],
+        "facility": ["CS", "CT", "CU", "CV", "CW", "CX"],
+        "pmv": ["CZ", "DA", "DB", "DC", "DD", "DE"],
         "community": ["DG", "DH", "DI", "DJ", "DK", "DL"],
-        "lab":       ["DN", "DO", "DP", "DQ", "DR", "DS"],
-        "tba":       ["DU", "DV", "DW", "DX", "DY", "DZ"],
+        "lab": ["DN", "DO", "DP", "DQ", "DR", "DS"],
+        "tba": ["DU", "DV", "DW", "DX", "DY", "DZ"],
     },
     "evaluated": {
         "xpert": "EI",
@@ -108,11 +113,11 @@ TARGET_MAP = {
         "chest_xray": "EP",
     },
     "diagnosed": {
-        "facility":  ["ER", "ES", "ET", "EU", "EV", "EW"],
-        "pmv":       ["EY", "EZ", "FA", "FB", "FC", "FD"],
+        "facility": ["ER", "ES", "ET", "EU", "EV", "EW"],
+        "pmv": ["EY", "EZ", "FA", "FB", "FC", "FD"],
         "community": ["FF", "FG", "FH", "FI", "FJ", "FK"],
-        "lab":       ["FM", "FN", "FO", "FP", "FQ", "FR"],
-        "tba":       ["FT", "FU", "FV", "FW", "FX", "FY"],
+        "lab": ["FM", "FN", "FO", "FP", "FQ", "FR"],
+        "tba": ["FT", "FU", "FV", "FW", "FX", "FY"],
     },
     "diagnosed_mode": {
         "mtb_detected": "GH",
@@ -125,13 +130,12 @@ TARGET_MAP = {
         "chest_xray": "GO",
     },
     "notified": {
-        "facility":  ["GQ", "GR", "GS", "GT", "GU", "GV"],
-        "pmv":       ["GX", "GY", "GZ", "HA", "HB", "HC"],
+        "facility": ["GQ", "GR", "GS", "GT", "GU", "GV"],
+        "pmv": ["GX", "GY", "GZ", "HA", "HB", "HC"],
         "community": ["HE", "HF", "HG", "HH", "HI", "HJ"],
-        "lab":       ["HL", "HM", "HN", "HO", "HP", "HQ"],
-        "tba":       ["HS", "HT", "HU", "HV", "HW", "HX"],
+        "lab": ["HL", "HM", "HN", "HO", "HP", "HQ"],
+        "tba": ["HS", "HT", "HU", "HV", "HW", "HX"],
     },
-    # child_tb_notification intentionally omitted from upload payload
     "all_notified_xpert": "IH",
     "notified_breakdown": {
         "mtb_detected": "II",
@@ -149,14 +153,14 @@ TARGET_MAP = {
         "month_6": "IT",
     },
     "category_started": {
-        "new":     ["IV", "IW", "IX", "IY", "IZ", "JA"],
+        "new": ["IV", "IW", "IX", "IY", "IZ", "JA"],
         "relapse": ["JC", "JD", "JE", "JF", "JG", "JH"],
-        "other":   ["JJ", "JK", "JL", "JM", "JN", "JO"],
+        "other": ["JJ", "JK", "JL", "JM", "JN", "JO"],
     },
     "hiv_status": {
         "negative": ["JR", "JS", "JT", "JU", "JV", "JW"],
         "positive": ["JY", "JZ", "KA", "KB", "KC", "KD"],
-        "unknown":  ["KF", "KG", "KH", "KI", "KJ", "KK"],
+        "unknown": ["KF", "KG", "KH", "KI", "KJ", "KK"],
     },
     "cpt": ["KN", "KO", "KP", "KQ", "KR", "KS"],
     "art": ["KU", "KV", "KW", "KX", "KY", "KZ"],
@@ -164,24 +168,16 @@ TARGET_MAP = {
 
 
 def get_target_tab_from_month(report_month: str) -> str:
-    report_month = str(report_month).strip()
-    tab = MONTH_TO_TAB.get(report_month)
+    tab = MONTH_TO_TAB.get(str(report_month).strip())
     if not tab:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No master-sheet tab mapping found for month: {report_month}",
-        )
+        raise HTTPException(status_code=400, detail=f"No tab mapping found for month: {report_month}")
     return tab
 
 
 def get_quarter_from_month(report_month: str) -> str:
-    report_month = str(report_month).strip()
-    quarter = MONTH_TO_QUARTER.get(report_month)
+    quarter = MONTH_TO_QUARTER.get(str(report_month).strip())
     if not quarter:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported report month: {report_month}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unsupported report month: {report_month}")
     return quarter
 
 
@@ -199,38 +195,32 @@ def get_master_workbook_id(report_year: str, report_month: str) -> str:
 
 
 def get_gspread_client():
-    if not SERVICE_ACCOUNT_FILE.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Service account file not found at: {SERVICE_ACCOUNT_FILE}",
-        )
+    env_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
     try:
-        creds = Credentials.from_service_account_file(
-            str(SERVICE_ACCOUNT_FILE),
-            scopes=SCOPES,
-        )
-        return gspread.authorize(creds)
-    except Exception as exc:
-        text = str(exc)
-        network_markers = [
-            "oauth2.googleapis.com",
-            "sheets.googleapis.com",
-            "www.googleapis.com",
-            "NameResolutionError",
-            "getaddrinfo failed",
-            "Max retries exceeded",
-            "Failed to resolve",
-        ]
-        if any(marker in text for marker in network_markers):
+        if env_json:
+            service_account_info = json.loads(env_json)
+            creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+            return gspread.authorize(creds)
+
+        service_account_file = RENDER_SECRET_FILE if RENDER_SECRET_FILE.exists() else LOCAL_SERVICE_ACCOUNT_FILE
+
+        if not service_account_file.exists():
             raise HTTPException(
-                status_code=503,
-                detail="Cannot connect to Google services right now. Please check your internet, DNS, VPN, firewall, or try another network.",
+                status_code=500,
+                detail=(
+                    "Google credentials not found. Add GOOGLE_SERVICE_ACCOUNT_JSON in Render "
+                    f"or provide local file at {LOCAL_SERVICE_ACCOUNT_FILE}"
+                ),
             )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Google authentication failed: {text}",
-        )
+
+        creds = Credentials.from_service_account_file(str(service_account_file), scopes=SCOPES)
+        return gspread.authorize(creds)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Google authentication failed: {str(exc)}")
 
 
 def open_master_sheet(report_year: str, report_month: str):
@@ -240,36 +230,10 @@ def open_master_sheet(report_year: str, report_month: str):
 
     try:
         workbook = client.open_by_key(workbook_id)
-    except Exception as exc:
-        text = str(exc)
-        network_markers = [
-            "oauth2.googleapis.com",
-            "sheets.googleapis.com",
-            "www.googleapis.com",
-            "NameResolutionError",
-            "getaddrinfo failed",
-            "Max retries exceeded",
-            "Failed to resolve",
-        ]
-        if any(marker in text for marker in network_markers):
-            raise HTTPException(
-                status_code=503,
-                detail="Google Sheets is temporarily unreachable from this computer or network. Check your internet, DNS, VPN, firewall, or try another network.",
-            )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to open master workbook by key. {text}",
-        )
-
-    try:
         worksheet = workbook.worksheet(target_tab)
+        return workbook, worksheet, workbook_id, target_tab
     except Exception as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Worksheet/tab '{target_tab}' not found in the selected master workbook. {str(exc)}",
-        )
-
-    return workbook, worksheet, workbook_id, target_tab
+        raise HTTPException(status_code=500, detail=f"Unable to open master workbook/tab: {str(exc)}")
 
 
 def normalize_text(value: str) -> str:
@@ -281,12 +245,10 @@ def normalize_text(value: str) -> str:
 def clean_number(val):
     if pd.isna(val):
         return 0
-
     if isinstance(val, str):
         val = val.strip().replace(",", "")
         if val == "":
             return 0
-
     num = pd.to_numeric(val, errors="coerce")
     return 0 if pd.isna(num) else float(num)
 
@@ -328,10 +290,7 @@ def extract_grouped(df: pd.DataFrame, male_row: int, female_row: int) -> List[fl
     female_5_14 = clean_number(df.iloc[female_row, 5]) + clean_number(df.iloc[female_row, 6])
     female_15_plus = sum(clean_number(df.iloc[female_row, c]) for c in range(7, 18))
 
-    return [
-        male_0_4, male_5_14, male_15_plus,
-        female_0_4, female_5_14, female_15_plus,
-    ]
+    return [male_0_4, male_5_14, male_15_plus, female_0_4, female_5_14, female_15_plus]
 
 
 def grouped_sum(vals: List[float]) -> float:
@@ -349,10 +308,8 @@ def sum_many_pair_totals(df: pd.DataFrame, row_pairs: List[Tuple[int, int]]) -> 
 def under15_total(df: pd.DataFrame, male_row: int, female_row: int) -> float:
     total = 0
     for row in [male_row, female_row]:
-        total += clean_number(df.iloc[row, 3])
-        total += clean_number(df.iloc[row, 4])
-        total += clean_number(df.iloc[row, 5])
-        total += clean_number(df.iloc[row, 6])
+        for c in [3, 4, 5, 6]:
+            total += clean_number(df.iloc[row, c])
     return total
 
 
@@ -367,25 +324,25 @@ def all_age_total(df: pd.DataFrame, male_row: int, female_row: int) -> float:
 def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
     return {
         "attendance": {
-            "facility":  extract_grouped(df, 5, 6),
-            "pmv":       extract_grouped(df, 8, 9),
+            "facility": extract_grouped(df, 5, 6),
+            "pmv": extract_grouped(df, 8, 9),
             "community": extract_grouped(df, 11, 12),
-            "lab":       extract_grouped(df, 14, 15),
-            "tba":       extract_grouped(df, 17, 18),
+            "lab": extract_grouped(df, 14, 15),
+            "tba": extract_grouped(df, 17, 18),
         },
         "screened": {
-            "facility":  extract_grouped(df, 24, 25),
-            "pmv":       extract_grouped(df, 27, 28),
+            "facility": extract_grouped(df, 24, 25),
+            "pmv": extract_grouped(df, 27, 28),
             "community": extract_grouped(df, 30, 31),
-            "lab":       extract_grouped(df, 33, 34),
-            "tba":       extract_grouped(df, 36, 37),
+            "lab": extract_grouped(df, 33, 34),
+            "tba": extract_grouped(df, 36, 37),
         },
         "presumptive": {
-            "facility":  extract_grouped(df, 43, 44),
-            "pmv":       extract_grouped(df, 46, 47),
+            "facility": extract_grouped(df, 43, 44),
+            "pmv": extract_grouped(df, 46, 47),
             "community": extract_grouped(df, 49, 50),
-            "lab":       extract_grouped(df, 52, 53),
-            "tba":       extract_grouped(df, 55, 56),
+            "lab": extract_grouped(df, 52, 53),
+            "tba": extract_grouped(df, 55, 56),
         },
         "evaluated": {
             "xpert": sum_pair_total(df, 62, 63),
@@ -398,36 +355,36 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "chest_xray": 0,
         },
         "diagnosed": {
-            "facility":  extract_grouped(df, 81, 82),
-            "pmv":       extract_grouped(df, 84, 85),
+            "facility": extract_grouped(df, 81, 82),
+            "pmv": extract_grouped(df, 84, 85),
             "community": extract_grouped(df, 87, 88),
-            "lab":       extract_grouped(df, 90, 91),
-            "tba":       extract_grouped(df, 93, 94),
+            "lab": extract_grouped(df, 90, 91),
+            "tba": extract_grouped(df, 93, 94),
         },
         "diagnosed_mode": {
             "mtb_detected": sum_many_pair_totals(df, [(101, 102), (120, 121), (139, 140), (158, 159), (177, 178)]),
-            "afb":          sum_many_pair_totals(df, [(104, 105), (123, 124), (142, 143), (161, 162), (180, 181)]),
-            "tblamp":       sum_many_pair_totals(df, [(107, 108), (126, 127), (145, 146), (164, 165), (183, 184)]),
-            "trunat":       sum_many_pair_totals(df, [(110, 111), (129, 130), (148, 149), (167, 168), (186, 187)]),
+            "afb": sum_many_pair_totals(df, [(104, 105), (123, 124), (142, 143), (161, 162), (180, 181)]),
+            "tblamp": sum_many_pair_totals(df, [(107, 108), (126, 127), (145, 146), (164, 165), (183, 184)]),
+            "trunat": sum_many_pair_totals(df, [(110, 111), (129, 130), (148, 149), (167, 168), (186, 187)]),
             "lf_lam_clinical_chestxray": sum_many_pair_totals(df, [(113, 114), (132, 133), (151, 152), (170, 171), (189, 190)]),
             "clinical": 0,
             "pdx": 0,
             "chest_xray": 0,
         },
         "notified": {
-            "facility":  extract_grouped(df, 215, 216),
-            "pmv":       extract_grouped(df, 218, 219),
+            "facility": extract_grouped(df, 215, 216),
+            "pmv": extract_grouped(df, 218, 219),
             "community": extract_grouped(df, 221, 222),
-            "lab":       extract_grouped(df, 224, 225),
-            "tba":       extract_grouped(df, 227, 228),
+            "lab": extract_grouped(df, 224, 225),
+            "tba": extract_grouped(df, 227, 228),
         },
         "child_tb_notification": under15_total(df, 234, 235),
         "all_notified_xpert": sum_pair_total(df, 241, 242),
         "notified_breakdown": {
             "mtb_detected": sum_pair_total(df, 241, 242),
-            "afb":          sum_pair_total(df, 244, 245),
-            "tblamp":       sum_pair_total(df, 247, 248),
-            "trunat":       sum_pair_total(df, 250, 251),
+            "afb": sum_pair_total(df, 244, 245),
+            "tblamp": sum_pair_total(df, 247, 248),
+            "trunat": sum_pair_total(df, 250, 251),
             "lf_lam_clinical_chestxray": sum_pair_total(df, 253, 254),
             "clinical": 0,
             "pdx": 0,
@@ -491,9 +448,6 @@ def build_preview_payload_for_row(source_blocks: Dict[str, Any], matched_row: in
         f"{col}{matched_row}": source_blocks["diagnosed_mode"][key]
         for key, col in TARGET_MAP["diagnosed_mode"].items()
     }
-
-    # Child TB notification intentionally excluded from write payload.
-    # It is auto-derived in the master sheet.
 
     preview["all_notified_xpert"] = {
         f"{TARGET_MAP['all_notified_xpert']}{matched_row}": source_blocks["all_notified_xpert"]
@@ -627,10 +581,7 @@ async def preview(
     temp_path = None
 
     try:
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            report_year=report_year,
-            report_month=source_month_sheet,
-        )
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(report_year, source_month_sheet)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
@@ -685,10 +636,7 @@ async def validate(
     temp_path = None
 
     try:
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            report_year=report_year,
-            report_month=source_month_sheet,
-        )
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(report_year, source_month_sheet)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
@@ -746,10 +694,7 @@ async def upload(
     temp_path = None
 
     try:
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            report_year=report_year,
-            report_month=source_month_sheet,
-        )
+        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(report_year, source_month_sheet)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
