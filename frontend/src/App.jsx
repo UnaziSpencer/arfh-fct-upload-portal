@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://arfh-fct-upload-portal.onrender.com";
+const PASSWORD_STORAGE_KEY = "arfh_app_password";
 
 const FACILITY_MAPPING = {
   Abaji: ["Ni'ma Clinic", "St Peter Hospital"],
@@ -109,6 +110,10 @@ const MONTH_OPTIONS = [
 ];
 
 export default function App() {
+  const [password, setPassword] = useState(localStorage.getItem(PASSWORD_STORAGE_KEY) || "");
+  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(localStorage.getItem(PASSWORD_STORAGE_KEY)));
+  const [loginError, setLoginError] = useState("");
+
   const [stateValue, setStateValue] = useState("FCT");
   const [lga, setLga] = useState("AMAC");
   const [facilitySearch, setFacilitySearch] = useState("");
@@ -144,8 +149,11 @@ export default function App() {
   }, [facilityOptions, facility]);
 
   useEffect(() => {
-    fetchLogs();
-  }, []);
+    if (isAuthenticated) {
+      fetchLogs();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
 
   const validationPassed = validationData?.status === "passed";
 
@@ -153,6 +161,51 @@ export default function App() {
     setErrorMessage("");
     setSuccessMessage("");
   };
+
+  const handleLogin = async () => {
+    const cleanPassword = password.trim();
+
+    if (!cleanPassword) {
+      setLoginError("Please enter the team access password.");
+      return;
+    }
+
+    try {
+      setLoginError("");
+      const response = await fetch(`${API_BASE_URL}/api/upload-logs`, {
+        headers: {
+          "X-App-Password": cleanPassword,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Invalid password. Please try again.");
+      }
+
+      localStorage.setItem(PASSWORD_STORAGE_KEY, cleanPassword);
+      setPassword(cleanPassword);
+      setIsAuthenticated(true);
+    } catch (error) {
+      setLoginError(error.message || "Login failed. Please try again.");
+      localStorage.removeItem(PASSWORD_STORAGE_KEY);
+      setIsAuthenticated(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(PASSWORD_STORAGE_KEY);
+    setPassword("");
+    setIsAuthenticated(false);
+    setUploadLogs([]);
+    setPreviewData(null);
+    setValidationData(null);
+    setUploadData(null);
+    resetFeedback();
+  };
+
+  const getAuthHeaders = () => ({
+    "X-App-Password": localStorage.getItem(PASSWORD_STORAGE_KEY) || password,
+  });
 
   const buildFormData = () => {
     if (!file) throw new Error("Please choose an Excel file first.");
@@ -174,12 +227,18 @@ export default function App() {
   const postToBackend = async (endpoint) => {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       method: "POST",
+      headers: getAuthHeaders(),
       body: buildFormData(),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem(PASSWORD_STORAGE_KEY);
+        setIsAuthenticated(false);
+      }
+
       let message = `Request failed with status ${response.status}`;
       if (typeof data.detail === "string") message = data.detail;
       else if (typeof data.message === "string") message = data.message;
@@ -191,11 +250,20 @@ export default function App() {
 
   const fetchLogs = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/upload-logs`);
+      const response = await fetch(`${API_BASE_URL}/api/upload-logs`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (response.status === 401) {
+        localStorage.removeItem(PASSWORD_STORAGE_KEY);
+        setIsAuthenticated(false);
+        return;
+      }
+
       const data = await response.json();
       setUploadLogs(data.logs || []);
     } catch {
-      // ignore logs fetch errors for now
+      // Ignore logs fetch errors so the upload form remains usable.
     }
   };
 
@@ -268,9 +336,78 @@ export default function App() {
   const totalSections = Object.keys(previewSummary).length || 0;
   const errorCount = 0;
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-100 px-4 py-8">
+        <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-6xl items-center justify-center">
+          <div className="grid w-full overflow-hidden rounded-[32px] bg-white shadow-xl lg:grid-cols-[0.95fr_1fr]">
+            <section className="bg-[#165693] p-8 text-white md:p-10">
+              <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                Secure GF Reporting Portal
+              </div>
+
+              <h1 className="max-w-xl text-4xl font-bold leading-tight md:text-5xl">
+                ARFH FCT Upload Portal
+              </h1>
+
+              <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-100">
+                Enter the team access password to preview, validate, and upload facility reporting data.
+              </p>
+            </section>
+
+            <section className="p-8 md:p-10">
+              <h2 className="text-3xl font-bold text-slate-900">Team Login</h2>
+              <p className="mt-2 text-slate-600">
+                Use the access password provided to authorised ARFH FCT users.
+              </p>
+
+              <div className="mt-8 space-y-4">
+                <input
+                  type="password"
+                  placeholder="Enter access password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleLogin();
+                  }}
+                  className={inputClass}
+                />
+
+                {loginError && (
+                  <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {loginError}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleLogin}
+                  className="w-full rounded-[20px] bg-[#165693] px-6 py-3 text-lg font-semibold text-white transition hover:opacity-95"
+                >
+                  Login
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-300"
+          >
+            Logout
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[0.95fr_1.2fr]">
           <section className="rounded-[28px] bg-[#165693] p-6 text-white shadow-lg">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm">
