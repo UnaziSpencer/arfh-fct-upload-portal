@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 import pandas as pd
 import gspread
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.oauth2.service_account import Credentials
 
@@ -37,6 +37,23 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+APP_ACCESS_PASSWORD = os.getenv("APP_ACCESS_PASSWORD", "").strip()
+
+
+def require_auth(x_app_password: str = Header(default="")):
+    """
+    Simple team-login protection.
+    Set APP_ACCESS_PASSWORD in Render.
+    Frontend sends it as X-App-Password after user logs in.
+    """
+    if not APP_ACCESS_PASSWORD:
+        return True
+
+    if x_app_password != APP_ACCESS_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized. Please log in again.")
+
+    return True
 
 # Put your real workbook IDs here.
 MASTER_WORKBOOK_IDS = {
@@ -718,7 +735,7 @@ def root():
 
 
 @app.get("/api/upload-logs")
-def get_upload_logs():
+def get_upload_logs(_: bool = Depends(require_auth)):
     conn = get_connection()
     cur = conn.cursor()
     rows = cur.execute(
@@ -745,6 +762,7 @@ async def preview(
     report_type: str = Form(...),
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
+    _: bool = Depends(require_auth),
 ):
     temp_path = None
 
@@ -803,6 +821,7 @@ async def validate(
     report_type: str = Form(...),
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
+    _: bool = Depends(require_auth),
 ):
     temp_path = None
 
@@ -864,6 +883,7 @@ async def upload(
     report_type: str = Form(...),
     spreadsheet_name: str = Form(...),
     file: UploadFile = File(...),
+    _: bool = Depends(require_auth),
 ):
     temp_path = None
 
