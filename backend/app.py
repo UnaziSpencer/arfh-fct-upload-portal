@@ -58,7 +58,7 @@ def require_auth(x_app_password: str = Header(default="")):
 # Put your real workbook IDs here.
 MASTER_WORKBOOK_IDS = {
     ("2026", "Q1"): "1WO6ck6-ZDe-4tozRkvG-bj0q7B7KgBGm0Ar7AebESIo",
-    ("2026", "Q2"): "PASTE_YOUR_REAL_2026_Q2_WORKBOOK_ID_HERE",
+    ("2026", "Q2"): "1UtHfkfyQbZgXhbGul9RVPWpcWo_8fQliVDCsM0DL3tM",
     ("2026", "Q3"): "PASTE_YOUR_REAL_2026_Q3_WORKBOOK_ID_HERE",
     ("2026", "Q4"): "PASTE_YOUR_REAL_2026_Q4_WORKBOOK_ID_HERE",
 }
