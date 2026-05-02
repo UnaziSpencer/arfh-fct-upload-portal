@@ -848,8 +848,8 @@ async def validate(
             issues.append("Attendance total is zero or invalid.")
         if summary["screened_total"] <= 0:
             issues.append("Screened total is zero or invalid.")
-        if summary["presumptive_total"] <= 0:
-            issues.append("Presumptive total is zero or invalid.")
+        if summary["presumptive_total"] < 0:
+            issues.append("Presumptive total cannot be negative.")
 
         return {
             "status": "passed" if not issues else "failed",
