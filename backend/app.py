@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -344,6 +345,10 @@ def normalize_text(value: str) -> str:
 
 
 def clean_number(val):
+    """
+    Safely converts uploaded spreadsheet values to normal Python numbers.
+    Google Sheets JSON payloads cannot contain NaN, inf, or -inf.
+    """
     if pd.isna(val):
         return 0
 
@@ -353,7 +358,50 @@ def clean_number(val):
             return 0
 
     num = pd.to_numeric(val, errors="coerce")
-    return 0 if pd.isna(num) else float(num)
+
+    if pd.isna(num):
+        return 0
+
+    num = float(num)
+    if math.isnan(num) or math.isinf(num):
+        return 0
+
+    if num.is_integer():
+        return int(num)
+
+    return num
+
+
+def clean_cell_value(value):
+    """
+    Safely converts identity/text cells before sending to Google Sheets.
+    This prevents NaN/inf values from breaking batch_update JSON encoding.
+    """
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return ""
+
+    # Convert numpy scalar types to plain Python scalars.
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+
+    return value
+
+
+def clean_update_values(values):
+    return [[clean_cell_value(cell) for cell in row] for row in values]
 
 
 def save_upload_temporarily(upload_file: UploadFile) -> str:
@@ -640,7 +688,7 @@ def compact_cell_dict_to_row_update(cell_dict: Dict[str, Any]) -> Dict[str, Any]
 
     return {
         "range": f"{start_col}{row_number}:{end_col}{row_number}",
-        "values": [values],
+        "values": clean_update_values([values]),
     }
 
 
@@ -668,12 +716,35 @@ def flatten_preview_to_updates(preview_payload: Dict[str, Any]) -> List[Dict[str
     return [u for u in updates if u.get("range")]
 
 
+def strip_sheet_name_from_range(cell_range: str) -> str:
+    """
+    worksheet.update() expects A1 ranges without sheet prefixes.
+    If gspread/API returns or receives a quoted sheet range, strip it safely.
+    """
+    if "!" in cell_range:
+        return cell_range.split("!", 1)[1].replace("'", "")
+    return cell_range.replace("'", "")
+
+
+def sanitize_updates(updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sanitized = []
+    for update in updates:
+        sanitized.append({
+            "range": strip_sheet_name_from_range(str(update.get("range", ""))),
+            "values": clean_update_values(update.get("values", [[]])),
+        })
+    return [u for u in sanitized if u.get("range")]
+
+
 def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
     """
     First attempts a fast batch update. If Google blocks one protected range,
     it falls back to range-by-range updates so the rest can still write.
+    All update values are sanitized so NaN/inf never reach Google JSON payloads.
     """
     failed: List[Dict[str, str]] = []
+
+    updates = sanitize_updates(updates)
 
     if not updates:
         return 0, failed
@@ -686,8 +757,8 @@ def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, L
 
     successful = 0
     for update in updates:
-        cell_range = update["range"]
-        values = update["values"]
+        cell_range = strip_sheet_name_from_range(update["range"])
+        values = clean_update_values(update["values"])
         try:
             worksheet.update(
                 range_name=cell_range,
@@ -779,7 +850,7 @@ def make_row_range_update(start_col: str, row_number: int, values: List[Any]) ->
     end_col = num_to_col(start_num + len(values) - 1)
     return {
         "range": f"{start_col}{row_number}:{end_col}{row_number}",
-        "values": [values],
+        "values": clean_update_values([values]),
     }
 
 
@@ -1026,12 +1097,12 @@ def build_pmtct_updates(df: pd.DataFrame, worksheet, source_month_sheet: str) ->
 
             # Identity fields B:G.
             updates.append(make_row_range_update("B", target_row, [
-                df.iloc[source_index, 1],
-                df.iloc[source_index, 2],
-                df.iloc[source_index, 3],
-                df.iloc[source_index, 4],
-                df.iloc[source_index, 5],
-                df.iloc[source_index, 6],
+                clean_cell_value(df.iloc[source_index, 1]),
+                clean_cell_value(df.iloc[source_index, 2]),
+                clean_cell_value(df.iloc[source_index, 3]),
+                clean_cell_value(df.iloc[source_index, 4]),
+                clean_cell_value(df.iloc[source_index, 5]),
+                clean_cell_value(df.iloc[source_index, 6]),
             ]))
 
         else:
