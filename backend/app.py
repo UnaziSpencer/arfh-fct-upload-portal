@@ -1,7 +1,9 @@
 import os
 import json
+import re
 import tempfile
 from pathlib import Path
+from difflib import SequenceMatcher
 from typing import Dict, Any, Optional, List, Tuple
 
 import pandas as pd
@@ -92,6 +94,30 @@ MONTH_TO_QUARTER = {
     "November": "Q4", "Nov": "Q4",
     "December": "Q4", "Dec": "Q4",
 }
+
+PMTCT_WORKBOOK_IDS = {
+    ("2026", "Q2"): "13XZxAwsmZCZ8ECk_FI2UPUwqO5Wxmmxj7NUMClBVV3g",
+}
+
+PMTCT_REPORT_TYPE = "Community PMTCT Upload"
+
+PMTCT_SOURCE_SHEET_NAME = "cPMTCT"
+
+PMTCT_TARGET_TAB_BY_MONTH = {
+    "January": "cPMTCT_Jan", "Jan": "cPMTCT_Jan",
+    "February": "cPMTCT_Feb", "Feb": "cPMTCT_Feb",
+    "March": "cPMTCT_Mar", "Mar": "cPMTCT_Mar",
+    "April": "cPMTCT_Apr", "Apr": "cPMTCT_Apr",
+    "May": "cPMTCT_May",
+    "June": "cPMTCT_Jun", "Jun": "cPMTCT_Jun",
+    "July": "cPMTCT_Jul", "Jul": "cPMTCT_Jul",
+    "August": "cPMTCT_Aug", "Aug": "cPMTCT_Aug",
+    "September": "cPMTCT_Sep", "Sep": "cPMTCT_Sep",
+    "October": "cPMTCT_Oct", "Oct": "cPMTCT_Oct",
+    "November": "cPMTCT_Nov", "Nov": "cPMTCT_Nov",
+    "December": "cPMTCT_Dec", "Dec": "cPMTCT_Dec",
+}
+
 
 TARGET_MAP = {
     "attendance": {
@@ -676,6 +702,406 @@ def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, L
     return successful, failed
 
 
+def aggressive_normalize(value: str) -> str:
+    value = normalize_text(value)
+    return re.sub(r"[^a-z0-9]", "", value)
+
+
+def similarity_score(a: str, b: str) -> float:
+    return SequenceMatcher(None, aggressive_normalize(a), aggressive_normalize(b)).ratio() * 100
+
+
+def get_pmtct_target_tab_from_month(report_month: str) -> str:
+    report_month = str(report_month).strip()
+    tab = PMTCT_TARGET_TAB_BY_MONTH.get(report_month)
+    if not tab:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No PMTCT master-sheet tab mapping found for month: {report_month}",
+        )
+    return tab
+
+
+def get_pmtct_workbook_id(report_year: str, report_month: str) -> str:
+    quarter = get_quarter_from_month(report_month)
+    workbook_id = PMTCT_WORKBOOK_IDS.get((str(report_year), quarter))
+
+    if not workbook_id or workbook_id.startswith("PUT_") or workbook_id.startswith("PASTE_"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"PMTCT workbook ID is not configured for year {report_year} and quarter {quarter}.",
+        )
+
+    return workbook_id
+
+
+def open_pmtct_master_sheet(report_year: str, report_month: str):
+    target_tab = get_pmtct_target_tab_from_month(report_month)
+    workbook_id = get_pmtct_workbook_id(report_year, report_month)
+    client = get_gspread_client()
+
+    try:
+        workbook = client.open_by_key(workbook_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to open PMTCT master workbook by key. {str(exc)}",
+        )
+
+    try:
+        worksheet = workbook.worksheet(target_tab)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"PMTCT worksheet/tab '{target_tab}' not found. {str(exc)}",
+        )
+
+    return workbook, worksheet, workbook_id, target_tab
+
+
+def load_pmtct_source_df(file_path: str) -> pd.DataFrame:
+    try:
+        return pd.read_excel(file_path, sheet_name=PMTCT_SOURCE_SHEET_NAME, header=None)
+    except Exception:
+        return pd.read_excel(file_path, sheet_name=0, header=None)
+
+
+def col_to_num(col: str) -> int:
+    return column_letter_to_number(col)
+
+
+def num_to_col(num: int) -> str:
+    return column_number_to_letter(num)
+
+
+def make_row_range_update(start_col: str, row_number: int, values: List[Any]) -> Dict[str, Any]:
+    start_num = col_to_num(start_col)
+    end_col = num_to_col(start_num + len(values) - 1)
+    return {
+        "range": f"{start_col}{row_number}:{end_col}{row_number}",
+        "values": [values],
+    }
+
+
+PMTCT_INDICATORS = [
+    (0, "presumed_pregnant_identified"),
+    (1, "screened_for_tb"),
+    (2, "screened_for_hiv"),
+    (3, "eligible_for_hiv_testing_not_started_anc"),
+    (4, "tested_for_hiv"),
+    (5, "new_hiv_positive"),
+    (6, "previously_known_hiv_positive_retested"),
+
+    # Original block index 7 skipped:
+    # total_hiv_positive is formula-derived in the master sheet.
+
+    (8, "referred_for_general_anc"),
+    (9, "hiv_positive_referred_for_art"),
+    (10, "hiv_positive_placed_on_art"),
+    (11, "tested_for_syphilis"),
+    (12, "positive_for_syphilis"),
+    (13, "syphilis_positive_treated_or_referred"),
+    (14, "tested_for_hbv"),
+    (15, "positive_for_hbv"),
+    (16, "hiv_hbv_coinfected"),
+    (17, "presumptive_tb"),
+    (18, "evaluated_for_tb"),
+    (19, "tb_results_received"),
+    (20, "diagnosed_tb_dstb"),
+    (21, "started_tb_treatment_dstb"),
+    (22, "diagnosed_tb_drtb"),
+    (23, "started_tb_treatment_drtb"),
+    (24, "hiv_positive_diagnosed_tb"),
+    (25, "hiv_positive_started_tb_treatment"),
+    (26, "infants_delivered_by_wlhiv"),
+    (27, "infant_hiv_testing_within_2_months"),
+]
+
+PMTCT_START_COL_NUM = col_to_num("H")
+PMTCT_BLOCK_WIDTH = 10
+
+
+def extract_pmtct_input_groups(df: pd.DataFrame, source_index: int, indicator_original_position: int) -> Dict[str, List[int]]:
+    """
+    Each PMTCT block has 10 columns.
+    We write only editable input cells and skip formula cells:
+    - Community <20, 20+
+    - At Home <20, 20+
+    - Unconventional <20, 20+
+    We skip Community Total, At Home Total, Unconventional Total, and G.Total.
+    """
+    block_start_idx = 7 + (indicator_original_position * PMTCT_BLOCK_WIDTH)
+
+    return {
+        "community": [
+            int(clean_number(df.iloc[source_index, block_start_idx + 0])),
+            int(clean_number(df.iloc[source_index, block_start_idx + 1])),
+        ],
+        "at_home": [
+            int(clean_number(df.iloc[source_index, block_start_idx + 3])),
+            int(clean_number(df.iloc[source_index, block_start_idx + 4])),
+        ],
+        "unconventional": [
+            int(clean_number(df.iloc[source_index, block_start_idx + 6])),
+            int(clean_number(df.iloc[source_index, block_start_idx + 7])),
+        ],
+    }
+
+
+def build_pmtct_indicator_updates(row_number: int, df: pd.DataFrame, source_index: int, indicator_original_position: int) -> List[Dict[str, Any]]:
+    block_start_num = PMTCT_START_COL_NUM + (indicator_original_position * PMTCT_BLOCK_WIDTH)
+    groups = extract_pmtct_input_groups(df, source_index, indicator_original_position)
+
+    return [
+        make_row_range_update(num_to_col(block_start_num + 0), row_number, groups["community"]),
+        make_row_range_update(num_to_col(block_start_num + 3), row_number, groups["at_home"]),
+        make_row_range_update(num_to_col(block_start_num + 6), row_number, groups["unconventional"]),
+    ]
+
+
+def get_pmtct_source_rows(df: pd.DataFrame, source_month_sheet: str) -> List[Dict[str, Any]]:
+    source_month = str(source_month_sheet).strip().upper()
+    rows = []
+    data_start_index = 5
+
+    for idx in range(data_start_index, len(df)):
+        month_value = normalize_text(df.iloc[idx, 1])
+        facility_name = str(df.iloc[idx, 4]).strip() if not pd.isna(df.iloc[idx, 4]) else ""
+
+        if not facility_name or facility_name.lower() == "nan":
+            continue
+
+        if source_month and source_month.lower() not in month_value:
+            continue
+
+        rows.append({
+            "source_index": idx,
+            "excel_row": idx + 1,
+            "month": df.iloc[idx, 1],
+            "state": df.iloc[idx, 2],
+            "lga": str(df.iloc[idx, 3]).strip() if not pd.isna(df.iloc[idx, 3]) else "",
+            "facility_name": facility_name,
+            "captured_sdp": df.iloc[idx, 5],
+            "captured_ndars": df.iloc[idx, 6],
+        })
+
+    return rows
+
+
+def build_pmtct_target_indexes(worksheet) -> Tuple[Dict[str, int], Dict[str, int], Dict[int, str], List[int]]:
+    target_values = worksheet.get_all_values()
+
+    target_facility_rows_exact: Dict[str, int] = {}
+    target_facility_rows_aggressive: Dict[str, int] = {}
+    target_facility_display: Dict[int, str] = {}
+    empty_target_rows: List[int] = []
+
+    master_data_start_row = 6
+
+    for row_number in range(master_data_start_row, len(target_values) + 1):
+        row = target_values[row_number - 1]
+        facility_value = row[4] if len(row) > 4 else ""
+
+        norm_exact = normalize_text(facility_value)
+        norm_aggressive = aggressive_normalize(facility_value)
+
+        if norm_exact:
+            target_facility_rows_exact[norm_exact] = row_number
+            target_facility_rows_aggressive[norm_aggressive] = row_number
+            target_facility_display[row_number] = facility_value
+        else:
+            empty_target_rows.append(row_number)
+
+    return target_facility_rows_exact, target_facility_rows_aggressive, target_facility_display, empty_target_rows
+
+
+def find_pmtct_best_target_row(
+    source_facility_name: str,
+    target_facility_rows_exact: Dict[str, int],
+    target_facility_rows_aggressive: Dict[str, int],
+    target_facility_display: Dict[int, str],
+    threshold: float = 90,
+) -> Dict[str, Any]:
+    norm_exact = normalize_text(source_facility_name)
+    norm_aggressive = aggressive_normalize(source_facility_name)
+
+    if norm_exact in target_facility_rows_exact:
+        row = target_facility_rows_exact[norm_exact]
+        return {
+            "target_row": row,
+            "match_type": "exact",
+            "matched_name": target_facility_display.get(row, ""),
+            "score": 100,
+        }
+
+    if norm_aggressive in target_facility_rows_aggressive:
+        row = target_facility_rows_aggressive[norm_aggressive]
+        return {
+            "target_row": row,
+            "match_type": "aggressive",
+            "matched_name": target_facility_display.get(row, ""),
+            "score": 100,
+        }
+
+    best_score = 0
+    best_row = None
+
+    for row, target_name in target_facility_display.items():
+        score = similarity_score(source_facility_name, target_name)
+        if score > best_score:
+            best_score = score
+            best_row = row
+
+    if best_row and best_score >= threshold:
+        return {
+            "target_row": best_row,
+            "match_type": "fuzzy",
+            "matched_name": target_facility_display.get(best_row, ""),
+            "score": round(best_score, 2),
+        }
+
+    return {
+        "target_row": None,
+        "match_type": "new_row_needed",
+        "matched_name": target_facility_display.get(best_row, "") if best_row else "",
+        "score": round(best_score, 2),
+    }
+
+
+def build_pmtct_updates(df: pd.DataFrame, worksheet, source_month_sheet: str) -> Dict[str, Any]:
+    source_rows = get_pmtct_source_rows(df, source_month_sheet)
+    target_values = worksheet.get_all_values()
+
+    (
+        target_facility_rows_exact,
+        target_facility_rows_aggressive,
+        target_facility_display,
+        empty_target_rows,
+    ) = build_pmtct_target_indexes(worksheet)
+
+    updates: List[Dict[str, Any]] = []
+    matched: List[Dict[str, Any]] = []
+    newly_added: List[Dict[str, Any]] = []
+
+    def get_next_empty_target_row() -> int:
+        nonlocal target_values
+
+        if empty_target_rows:
+            return empty_target_rows.pop(0)
+
+        next_row = len(target_values) + 1
+        worksheet.add_rows(1)
+        target_values.append([])
+        return next_row
+
+    for item in source_rows:
+        source_index = item["source_index"]
+        facility_name = item["facility_name"]
+
+        match_result = find_pmtct_best_target_row(
+            facility_name,
+            target_facility_rows_exact,
+            target_facility_rows_aggressive,
+            target_facility_display,
+            threshold=90,
+        )
+
+        target_row = match_result["target_row"]
+
+        if not target_row:
+            target_row = get_next_empty_target_row()
+
+            target_facility_rows_exact[normalize_text(facility_name)] = target_row
+            target_facility_rows_aggressive[aggressive_normalize(facility_name)] = target_row
+            target_facility_display[target_row] = facility_name
+
+            newly_added.append({
+                **item,
+                "target_row": target_row,
+                "action": "new row created",
+                "match_type": match_result["match_type"],
+                "closest_master_name": match_result["matched_name"],
+                "match_score": match_result["score"],
+            })
+
+            # Identity fields B:G.
+            updates.append(make_row_range_update("B", target_row, [
+                df.iloc[source_index, 1],
+                df.iloc[source_index, 2],
+                df.iloc[source_index, 3],
+                df.iloc[source_index, 4],
+                df.iloc[source_index, 5],
+                df.iloc[source_index, 6],
+            ]))
+
+        else:
+            matched.append({
+                **item,
+                "target_row": target_row,
+                "action": "matched existing row",
+                "match_type": match_result["match_type"],
+                "matched_name": match_result["matched_name"],
+                "match_score": match_result["score"],
+            })
+
+        for indicator_original_position, _indicator in PMTCT_INDICATORS:
+            updates.extend(
+                build_pmtct_indicator_updates(
+                    target_row,
+                    df,
+                    source_index,
+                    indicator_original_position,
+                )
+            )
+
+    summary: Dict[str, int] = {}
+
+    for indicator_original_position, indicator in PMTCT_INDICATORS:
+        indicator_total = 0
+
+        for item in source_rows:
+            groups = extract_pmtct_input_groups(
+                df,
+                item["source_index"],
+                indicator_original_position,
+            )
+            indicator_total += sum(groups["community"])
+            indicator_total += sum(groups["at_home"])
+            indicator_total += sum(groups["unconventional"])
+
+        summary[indicator] = indicator_total
+
+    return {
+        "source_rows": source_rows,
+        "matched": matched,
+        "newly_added": newly_added,
+        "updates": updates,
+        "summary": summary,
+    }
+
+
+def validation_summary_from_pmtct_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    summary = result["summary"]
+
+    return {
+        "source_rows_total": len(result["source_rows"]),
+        "matched_existing_rows": len(result["matched"]),
+        "new_rows_to_create": len(result["newly_added"]),
+        "range_updates_total": len(result["updates"]),
+        "presumed_pregnant_identified": summary.get("presumed_pregnant_identified", 0),
+        "screened_for_tb": summary.get("screened_for_tb", 0),
+        "screened_for_hiv": summary.get("screened_for_hiv", 0),
+        "eligible_for_hiv_testing_not_started_anc": summary.get("eligible_for_hiv_testing_not_started_anc", 0),
+        "tested_for_hiv": summary.get("tested_for_hiv", 0),
+        "new_hiv_positive": summary.get("new_hiv_positive", 0),
+        "previously_known_hiv_positive_retested": summary.get("previously_known_hiv_positive_retested", 0),
+        "referred_for_general_anc": summary.get("referred_for_general_anc", 0),
+        "tested_for_syphilis": summary.get("tested_for_syphilis", 0),
+        "tested_for_hbv": summary.get("tested_for_hbv", 0),
+        "positive_for_hbv": summary.get("positive_for_hbv", 0),
+    }
+
+
 def log_upload(
     facility_name: str,
     lga: str,
@@ -767,6 +1193,37 @@ async def preview(
     temp_path = None
 
     try:
+        temp_path = save_upload_temporarily(file)
+
+        if report_type == PMTCT_REPORT_TYPE:
+            _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
+                report_year=report_year,
+                report_month=source_month_sheet,
+            )
+
+            source_df = load_pmtct_source_df(temp_path)
+            pmtct_result = build_pmtct_updates(source_df, worksheet, source_month_sheet)
+            summary = validation_summary_from_pmtct_result(pmtct_result)
+
+            return {
+                "message": "PMTCT preview loaded successfully.",
+                "report_type": report_type,
+                "lga": lga,
+                "state": state,
+                "target_tab": actual_target_tab,
+                "report_year": report_year,
+                "quarter": get_quarter_from_month(source_month_sheet),
+                "master_workbook_id": workbook_id,
+                "uploaded_filename": file.filename,
+                "source_rows_total": len(pmtct_result["source_rows"]),
+                "matched_existing_rows": len(pmtct_result["matched"]),
+                "new_rows_to_create": len(pmtct_result["newly_added"]),
+                "range_updates_total": len(pmtct_result["updates"]),
+                "matched_preview": pmtct_result["matched"][:20],
+                "new_rows_preview": pmtct_result["newly_added"][:20],
+                "summary": summary,
+            }
+
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             report_year=report_year,
             report_month=source_month_sheet,
@@ -779,7 +1236,6 @@ async def preview(
                 detail=f"Facility '{facility_name}' was not found in tab '{actual_target_tab}'.",
             )
 
-        temp_path = save_upload_temporarily(file)
         source_df = load_source_df(temp_path, source_month_sheet)
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
@@ -826,6 +1282,41 @@ async def validate(
     temp_path = None
 
     try:
+        temp_path = save_upload_temporarily(file)
+
+        if report_type == PMTCT_REPORT_TYPE:
+            _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
+                report_year=report_year,
+                report_month=source_month_sheet,
+            )
+
+            source_df = load_pmtct_source_df(temp_path)
+            pmtct_result = build_pmtct_updates(source_df, worksheet, source_month_sheet)
+            summary = validation_summary_from_pmtct_result(pmtct_result)
+
+            issues = []
+            if summary["source_rows_total"] <= 0:
+                issues.append("No PMTCT source rows found for the selected month.")
+            if summary["presumed_pregnant_identified"] <= 0:
+                issues.append("Presumed pregnant women identified total is zero or invalid.")
+            if summary["screened_for_hiv"] <= 0:
+                issues.append("Pregnant women screened for HIV total is zero or invalid.")
+
+            return {
+                "status": "passed" if not issues else "failed",
+                "message": "PMTCT validation completed successfully." if not issues else "PMTCT validation failed.",
+                "report_type": report_type,
+                "sheet_checked": actual_target_tab,
+                "master_workbook_id": workbook_id,
+                "error_count": len(issues),
+                "issues": issues,
+                "source_rows_total": len(pmtct_result["source_rows"]),
+                "matched_existing_rows": len(pmtct_result["matched"]),
+                "new_rows_to_create": len(pmtct_result["newly_added"]),
+                "new_rows_preview": pmtct_result["newly_added"][:20],
+                "summary": summary,
+            }
+
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             report_year=report_year,
             report_month=source_month_sheet,
@@ -838,7 +1329,6 @@ async def validate(
                 detail=f"Facility '{facility_name}' not found in tab '{actual_target_tab}'.",
             )
 
-        temp_path = save_upload_temporarily(file)
         source_df = load_source_df(temp_path, source_month_sheet)
         source_blocks = build_source_blocks(source_df)
         summary = validation_summary_from_source_blocks(source_blocks)
@@ -888,6 +1378,67 @@ async def upload(
     temp_path = None
 
     try:
+        temp_path = save_upload_temporarily(file)
+
+        if report_type == PMTCT_REPORT_TYPE:
+            _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
+                report_year=report_year,
+                report_month=source_month_sheet,
+            )
+
+            source_df = load_pmtct_source_df(temp_path)
+            pmtct_result = build_pmtct_updates(source_df, worksheet, source_month_sheet)
+            updates = pmtct_result["updates"]
+
+            successful_updates, failed_updates = safe_apply_updates(worksheet, updates)
+            summary = validation_summary_from_pmtct_result(pmtct_result)
+
+            status = "uploaded" if successful_updates > 0 else "failed"
+            message = (
+                f"PMTCT upload completed. Successful writes: {successful_updates}. "
+                f"Skipped writes: {len(failed_updates)}. "
+                f"Matched rows: {len(pmtct_result['matched'])}. "
+                f"New rows created: {len(pmtct_result['newly_added'])}."
+            )
+
+            log_upload(
+                facility_name=f"Community PMTCT - {lga}",
+                lga=lga,
+                state=state,
+                report_year=report_year,
+                report_month=source_month_sheet,
+                target_tab=actual_target_tab,
+                quarter=get_quarter_from_month(source_month_sheet),
+                workbook_id=workbook_id,
+                matched_row=0,
+                uploaded_filename=file.filename,
+                updated_cells=successful_updates,
+                status=status,
+                message=message,
+                summary={
+                    "attendance_total": summary.get("presumed_pregnant_identified", 0),
+                    "screened_total": summary.get("screened_for_hiv", 0),
+                    "presumptive_total": summary.get("eligible_for_hiv_testing_not_started_anc", 0),
+                    "diagnosed_total": summary.get("new_hiv_positive", 0),
+                    "notified_total": summary.get("hiv_positive_placed_on_art", 0),
+                },
+            )
+
+            return {
+                "status": status,
+                "message": message,
+                "report_type": report_type,
+                "target_tab": actual_target_tab,
+                "quarter": get_quarter_from_month(source_month_sheet),
+                "master_workbook_id": workbook_id,
+                "uploaded_filename": file.filename,
+                "matched_existing_rows": len(pmtct_result["matched"]),
+                "new_rows_created": len(pmtct_result["newly_added"]),
+                "updated_cells": successful_updates,
+                "skipped_cells": failed_updates,
+                "summary": summary,
+            }
+
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             report_year=report_year,
             report_month=source_month_sheet,
@@ -900,7 +1451,6 @@ async def upload(
                 detail=f"Facility '{facility_name}' not found in tab '{actual_target_tab}'.",
             )
 
-        temp_path = save_upload_temporarily(file)
         source_df = load_source_df(temp_path, source_month_sheet)
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)

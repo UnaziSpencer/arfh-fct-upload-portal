@@ -3,6 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://arfh-fct-upload-portal.onrender.com";
 const PASSWORD_STORAGE_KEY = "arfh_app_password";
 
+const REPORT_TYPES = {
+  PPM: "PPM ETL Upload",
+  PMTCT: "Community PMTCT Upload",
+};
+
 const FACILITY_MAPPING = {
   Abaji: ["Ni'ma Clinic", "St Peter Hospital"],
   AMAC: [
@@ -120,7 +125,7 @@ export default function App() {
   const [facility, setFacility] = useState("Jikwoyi Medical Center");
   const [year, setYear] = useState("2026");
   const [month, setMonth] = useState("March");
-  const [reportType, setReportType] = useState("PPM ETL Upload");
+  const [reportType, setReportType] = useState(REPORT_TYPES.PPM);
   const [file, setFile] = useState(null);
 
   const [loadingAction, setLoadingAction] = useState("");
@@ -131,6 +136,8 @@ export default function App() {
   const [validationData, setValidationData] = useState(null);
   const [uploadData, setUploadData] = useState(null);
   const [uploadLogs, setUploadLogs] = useState([]);
+
+  const isPmtct = reportType === REPORT_TYPES.PMTCT;
 
   const lgaOptions = useMemo(() => Object.keys(FACILITY_MAPPING), []);
   const facilityOptions = useMemo(() => FACILITY_MAPPING[lga] || [], [lga]);
@@ -143,10 +150,10 @@ export default function App() {
   }, [facilityOptions, facilitySearch]);
 
   useEffect(() => {
-    if (!facilityOptions.includes(facility)) {
+    if (!isPmtct && !facilityOptions.includes(facility)) {
       setFacility(facilityOptions[0] || "");
     }
-  }, [facilityOptions, facility]);
+  }, [facilityOptions, facility, isPmtct]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -154,6 +161,14 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    setPreviewData(null);
+    setValidationData(null);
+    setUploadData(null);
+    setErrorMessage("");
+    setSuccessMessage("");
+  }, [reportType, month, year, lga, facility]);
 
   const validationPassed = validationData?.status === "passed";
 
@@ -209,17 +224,20 @@ export default function App() {
 
   const buildFormData = () => {
     if (!file) throw new Error("Please choose an Excel file first.");
-    if (!facility) throw new Error("Please select a facility.");
+    if (!isPmtct && !facility) throw new Error("Please select a facility.");
 
     const formData = new FormData();
-    formData.append("facility_name", facility);
+    formData.append("facility_name", isPmtct ? "Community PMTCT Cascade" : facility);
     formData.append("lga", lga);
     formData.append("state", stateValue);
     formData.append("report_year", year);
     formData.append("source_month_sheet", month);
     formData.append("target_tab", month);
     formData.append("report_type", reportType);
-    formData.append("spreadsheet_name", "FCT PPM Indicator reporting template");
+    formData.append(
+      "spreadsheet_name",
+      isPmtct ? "Community PMTCT reporting template" : "FCT PPM Indicator reporting template"
+    );
     formData.append("file", file);
     return formData;
   };
@@ -311,7 +329,9 @@ export default function App() {
       }
 
       const confirmed = window.confirm(
-        `Proceed with upload?\n\nFacility: ${facility}\nMonth: ${month}\nYear: ${year}\nTarget tab: ${previewData?.target_tab || month}`
+        `Proceed with upload?\n\nReport: ${reportType}\nLGA: ${lga}\nFacility/Workflow: ${
+          isPmtct ? "Community PMTCT Cascade" : facility
+        }\nMonth: ${month}\nYear: ${year}\nTarget tab: ${previewData?.target_tab || month}`
       );
 
       if (!confirmed) return;
@@ -331,10 +351,11 @@ export default function App() {
   };
 
   const previewSummary = previewData?.summary || {};
+  const summaryEntries = Object.entries(previewSummary);
   const previewTotals = Object.values(previewSummary).map((v) => Number(v) || 0);
   const matchedSections = previewTotals.filter((v) => v > 0).length;
   const totalSections = Object.keys(previewSummary).length || 0;
-  const errorCount = 0;
+  const errorCount = validationData?.error_count ?? 0;
 
   if (!isAuthenticated) {
     return (
@@ -420,7 +441,7 @@ export default function App() {
             </h1>
 
             <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-100">
-              Pilot-safe ARFH reporting portal with preview, validation, controlled upload, and upload logs.
+              Pilot-safe ARFH reporting portal with PPM and Community PMTCT upload workflows.
             </p>
           </section>
 
@@ -432,6 +453,13 @@ export default function App() {
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-5">
+                <Field label="Report Type">
+                  <select value={reportType} onChange={(e) => setReportType(e.target.value)} className={inputClass}>
+                    <option value={REPORT_TYPES.PPM}>PPM ETL Upload</option>
+                    <option value={REPORT_TYPES.PMTCT}>Community PMTCT Upload</option>
+                  </select>
+                </Field>
+
                 <Field label="State">
                   <select value={stateValue} onChange={(e) => setStateValue(e.target.value)} className={inputClass}>
                     <option>FCT</option>
@@ -446,23 +474,34 @@ export default function App() {
                   </select>
                 </Field>
 
-                <Field label="Facility Search">
-                  <input
-                    type="text"
-                    placeholder="Type facility name to filter..."
-                    value={facilitySearch}
-                    onChange={(e) => setFacilitySearch(e.target.value)}
-                    className={inputClass}
-                  />
-                </Field>
+                {!isPmtct && (
+                  <>
+                    <Field label="Facility Search">
+                      <input
+                        type="text"
+                        placeholder="Type facility name to filter..."
+                        value={facilitySearch}
+                        onChange={(e) => setFacilitySearch(e.target.value)}
+                        className={inputClass}
+                      />
+                    </Field>
 
-                <Field label="Facility">
-                  <select value={facility} onChange={(e) => setFacility(e.target.value)} className={inputClass}>
-                    {filteredFacilities.map((item) => (
-                      <option key={item} value={item}>{item}</option>
-                    ))}
-                  </select>
-                </Field>
+                    <Field label="Facility">
+                      <select value={facility} onChange={(e) => setFacility(e.target.value)} className={inputClass}>
+                        {filteredFacilities.map((item) => (
+                          <option key={item} value={item}>{item}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </>
+                )}
+
+                {isPmtct && (
+                  <div className="rounded-[20px] border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                    Community PMTCT upload reads all community/TBA rows in the uploaded Excel file,
+                    matches existing names in the master sheet, and creates new rows where needed.
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                   <Field label="Year">
@@ -479,12 +518,6 @@ export default function App() {
                     </select>
                   </Field>
                 </div>
-
-                <Field label="Report">
-                  <select value={reportType} onChange={(e) => setReportType(e.target.value)} className={inputClass}>
-                    <option value="PPM ETL Upload">PPM ETL Upload</option>
-                  </select>
-                </Field>
 
                 <Field label="Source Excel File">
                   <div className="flex flex-col gap-3 rounded-[22px] border border-dashed border-slate-300 bg-slate-50 p-4 md:flex-row md:items-center md:justify-between">
@@ -543,7 +576,8 @@ export default function App() {
                   <div>
                     <h3 className="text-3xl font-bold text-slate-900">Preview results</h3>
                     <p className="mt-1 text-sm text-slate-600">
-                      Facility: {previewData.facility_name} · Target tab: {previewData.target_tab} · Row: {previewData.matched_target_row}
+                      Report: {reportType} · Target tab: {previewData.target_tab || "N/A"} · Row:{" "}
+                      {previewData.matched_target_row ?? previewData.matched_rows ?? "Multiple"}
                     </p>
                   </div>
                   <span className="inline-flex w-fit rounded-full bg-blue-100 px-4 py-1.5 text-sm font-semibold text-blue-700">
@@ -557,13 +591,19 @@ export default function App() {
                   <InfoCard title="Errors" value={errorCount} />
                 </div>
 
-                {previewData.summary && (
+                {summaryEntries.length > 0 && (
                   <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-5">
-                    <InfoCard title="Attendance Total" value={previewData.summary.attendance_total ?? 0} />
-                    <InfoCard title="Screened Total" value={previewData.summary.screened_total ?? 0} />
-                    <InfoCard title="Presumptive Total" value={previewData.summary.presumptive_total ?? 0} />
-                    <InfoCard title="Diagnosed Total" value={previewData.summary.diagnosed_total ?? 0} />
-                    <InfoCard title="Notified Total" value={previewData.summary.notified_total ?? 0} />
+                    {summaryEntries.slice(0, 10).map(([key, value]) => (
+                      <InfoCard key={key} title={formatSummaryTitle(key)} value={value ?? 0} />
+                    ))}
+                  </div>
+                )}
+
+                {isPmtct && previewData.new_rows_created !== undefined && (
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <InfoCard title="Matched Existing Rows" value={previewData.matched_rows ?? 0} />
+                    <InfoCard title="New Rows Created" value={previewData.new_rows_created ?? 0} />
+                    <InfoCard title="Prepared Updates" value={previewData.prepared_updates ?? 0} />
                   </div>
                 )}
               </div>
@@ -576,7 +616,10 @@ export default function App() {
                   <InfoCard title="Status" value={validationData.status || "N/A"} />
                   <InfoCard title="Sheet Checked" value={validationData.sheet_checked || "N/A"} />
                   <InfoCard title="Errors" value={validationData.error_count ?? 0} />
-                  <InfoCard title="Matched Row" value={validationData.matched_target_row ?? "N/A"} />
+                  <InfoCard
+                    title={isPmtct ? "Matched Rows" : "Matched Row"}
+                    value={validationData.matched_rows ?? validationData.matched_target_row ?? "N/A"}
+                  />
                 </div>
               </div>
             )}
@@ -587,8 +630,11 @@ export default function App() {
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
                   <InfoCard title="Status" value={uploadData.status || "N/A"} />
                   <InfoCard title="Target Tab" value={uploadData.target_tab || "N/A"} />
-                  <InfoCard title="Matched Row" value={uploadData.matched_target_row ?? "N/A"} />
-                  <InfoCard title="Updated Cells" value={uploadData.updated_cells ?? 0} />
+                  <InfoCard
+                    title={isPmtct ? "Matched Rows" : "Matched Row"}
+                    value={uploadData.matched_rows ?? uploadData.matched_target_row ?? "N/A"}
+                  />
+                  <InfoCard title="Updated Cells/Ranges" value={uploadData.updated_cells ?? 0} />
                 </div>
               </div>
             )}
@@ -659,6 +705,10 @@ function InfoCard({ title, value }) {
       <p className="mt-2 text-2xl font-bold text-slate-900">{String(value)}</p>
     </div>
   );
+}
+
+function formatSummaryTitle(key) {
+  return key.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 const inputClass =
