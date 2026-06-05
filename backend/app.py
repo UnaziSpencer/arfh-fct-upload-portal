@@ -346,62 +346,123 @@ def normalize_text(value: str) -> str:
 
 def clean_number(val):
     """
-    Safely converts uploaded spreadsheet values to normal Python numbers.
-    Google Sheets JSON payloads cannot contain NaN, inf, or -inf.
+    Convert spreadsheet numeric cells to normal JSON-safe Python numbers.
+    Empty, NaN, inf, -inf, pandas NA, and non-numeric text become 0.
     """
-    if pd.isna(val):
-        return 0
-
-    if isinstance(val, str):
-        val = val.strip().replace(",", "")
-        if val == "":
+    try:
+        if val is None:
             return 0
 
-    num = pd.to_numeric(val, errors="coerce")
+        if hasattr(val, "item"):
+            try:
+                val = val.item()
+            except Exception:
+                pass
 
-    if pd.isna(num):
+        try:
+            missing = pd.isna(val)
+            if isinstance(missing, bool) and missing:
+                return 0
+        except Exception:
+            pass
+
+        if isinstance(val, str):
+            cleaned = val.strip().replace(",", "")
+            if cleaned.lower() in ["", "nan", "none", "null", "inf", "+inf", "-inf", "infinity", "-infinity"]:
+                return 0
+            val = cleaned
+
+        num = pd.to_numeric(val, errors="coerce")
+
+        try:
+            if pd.isna(num):
+                return 0
+        except Exception:
+            pass
+
+        num = float(num)
+        if not math.isfinite(num):
+            return 0
+
+        return int(num) if num.is_integer() else num
+
+    except Exception:
         return 0
-
-    num = float(num)
-    if math.isnan(num) or math.isinf(num):
-        return 0
-
-    if num.is_integer():
-        return int(num)
-
-    return num
 
 
 def clean_cell_value(value):
     """
-    Safely converts identity/text cells before sending to Google Sheets.
-    This prevents NaN/inf values from breaking batch_update JSON encoding.
+    Convert any value to something JSON-safe for Google Sheets/FastAPI.
+    This is intentionally strict because Google requests reject NaN/Infinity.
     """
-    if value is None:
-        return ""
-
     try:
-        if pd.isna(value):
-            return ""
-    except Exception:
-        pass
-
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
+        if value is None:
             return ""
 
-    # Convert numpy scalar types to plain Python scalars.
-    if hasattr(value, "item"):
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+
         try:
-            return value.item()
+            missing = pd.isna(value)
+            if isinstance(missing, bool) and missing:
+                return ""
         except Exception:
+            pass
+
+        if isinstance(value, bool):
             return value
 
-    return value
+        if isinstance(value, int):
+            return int(value)
+
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return ""
+            return int(value) if value.is_integer() else float(value)
+
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned.lower() in ["nan", "none", "null", "inf", "+inf", "-inf", "infinity", "-infinity"]:
+                return ""
+            return cleaned
+
+        # pandas Timestamp / datetime-like values
+        if hasattr(value, "isoformat"):
+            try:
+                return value.isoformat()
+            except Exception:
+                pass
+
+        return str(value)
+
+    except Exception:
+        return ""
+
+
+def make_json_safe(obj):
+    """Recursively clean dicts/lists/tuples/scalars so json.dumps(..., allow_nan=False) cannot fail."""
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [make_json_safe(v) for v in obj]
+    return clean_cell_value(obj)
 
 
 def clean_update_values(values):
-    return [[clean_cell_value(cell) for cell in row] for row in values]
+    return make_json_safe(values)
+
+
+def assert_json_safe(obj, context="payload"):
+    try:
+        json.dumps(obj, allow_nan=False)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal upload payload still contains a non-JSON-safe value in {context}: {str(exc)}",
+        )
 
 
 def save_upload_temporarily(upload_file: UploadFile) -> str:
@@ -727,23 +788,36 @@ def strip_sheet_name_from_range(cell_range: str) -> str:
 
 
 def sanitize_updates(updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    sanitized = []
+    """Clean ranges and recursively clean all values before any Google API call."""
+    sanitized: List[Dict[str, Any]] = []
+
     for update in updates:
+        cleaned_range = strip_sheet_name_from_range(str(update.get("range", ""))).strip()
+        if not cleaned_range:
+            continue
+
+        raw_values = update.get("values", [[]])
+        cleaned_values = clean_update_values(raw_values)
+
         sanitized.append({
-            "range": strip_sheet_name_from_range(str(update.get("range", ""))),
-            "values": clean_update_values(update.get("values", [[]])),
+            "range": cleaned_range,
+            "values": cleaned_values,
         })
-    return [u for u in sanitized if u.get("range")]
+
+    sanitized = make_json_safe(sanitized)
+    assert_json_safe(sanitized, context="Google Sheets updates")
+    return sanitized
 
 
 def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
     """
-    First attempts a fast batch update. If Google blocks one protected range,
-    it falls back to range-by-range updates so the rest can still write.
-    All update values are sanitized so NaN/inf never reach Google JSON payloads.
+    Apply updates safely.
+    1. Sanitises all ranges and values.
+    2. Confirms payload is valid JSON with no NaN/Infinity.
+    3. Uses batch update first.
+    4. If batch fails because of protected cells/ranges, falls back range-by-range.
     """
     failed: List[Dict[str, str]] = []
-
     updates = sanitize_updates(updates)
 
     if not updates:
@@ -760,6 +834,7 @@ def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, L
         cell_range = strip_sheet_name_from_range(update["range"])
         values = clean_update_values(update["values"])
         try:
+            assert_json_safe(values, context=f"range {cell_range}")
             worksheet.update(
                 range_name=cell_range,
                 values=values,
@@ -1228,7 +1303,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running."}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-json-safe-v3"}
 
 
 @app.get("/api/upload-logs")
