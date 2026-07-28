@@ -889,7 +889,8 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     - CPT and ART <= HIV-positive, by sex/age band.
     """
     validate_detailed_age_template(df)
-    issues: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
 
     attendance = extract_provider_detailed(df, "attendance")
     screened = extract_provider_detailed(df, "screened")
@@ -898,11 +899,11 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     notified = extract_provider_detailed(df, "notified")
 
     for provider in PROVIDER_ROW_PAIRS["attendance"].keys():
-        issues.extend(compare_detailed_age_bands(
+        errors.extend(compare_detailed_age_bands(
             attendance[provider], screened[provider],
             "Attendance", "Screened", "screened_not_above_attendance", provider,
         ))
-        issues.extend(compare_detailed_age_bands(
+        errors.extend(compare_detailed_age_bands(
             screened[provider], presumptive[provider],
             "Screened", "Presumptive", "presumptive_not_above_screened", provider,
         ))
@@ -919,43 +920,56 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     cpt = extract_detailed_age_pair(df, *CPT_ROW_PAIR)
     art = extract_detailed_age_pair(df, *ART_ROW_PAIR)
 
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         presumptive_total, evaluated_total,
         "Presumptive", "Presumptive evaluated", "evaluated_not_above_presumptive",
     ))
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         evaluated_total, diagnosed_total,
         "Presumptive evaluated", "Diagnosed", "diagnosed_not_above_evaluated",
     ))
-    issues.extend(compare_detailed_age_bands(
+    notified_warnings = compare_detailed_age_bands(
         diagnosed_total, notified_total,
-        "Diagnosed", "Notified", "notified_not_above_diagnosed",
-    ))
-    issues.extend(compare_detailed_age_bands(
+        "Diagnosed", "Notified", "notified_above_diagnosed_warning",
+    )
+    for item in notified_warnings:
+        item["severity"] = "warning"
+        item["message"] = (
+            f"Notified exceeds Diagnosed for {item['sex']} {item['age_band']}. "
+            f"Diagnosed={item['upstream_value']}, Notified={item['downstream_value']}. "
+            "This may be correct when a person diagnosed in a previous reporting month "
+            "starts treatment in the current month. Please double-check and confirm "
+            "that the figures reflect the true program situation."
+        )
+    warnings.extend(notified_warnings)
+    errors.extend(compare_detailed_age_bands(
         notified_total, notified_breakdown_total,
         "Total notified", "Notified diagnostic breakdown",
         "notified_breakdown_equals_notified", require_equal=True,
     ))
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         notified_total, category_started_total,
         "Notified", "Treatment started", "treatment_started_not_above_notified",
     ))
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         category_started_total, hiv_status_total,
         "Treatment-category total", "HIV-status total",
         "hiv_status_equals_treatment_started", require_equal=True,
     ))
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         hiv_positive, cpt, "HIV positive", "CPT", "cpt_not_above_hiv_positive",
     ))
-    issues.extend(compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         hiv_positive, art, "HIV positive", "ART", "art_not_above_hiv_positive",
     ))
 
+    status = "failed" if errors else ("warning" if warnings else "passed")
     return {
-        "status": "passed" if not issues else "failed",
-        "error_count": len(issues),
-        "issues": issues,
+        "status": status,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "issues": errors,
+        "warnings": warnings,
         "age_bands_checked": SOURCE_AGE_BANDS,
     }
 
@@ -1655,7 +1669,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v5"}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v6"}
 
 
 @app.get("/api/upload-logs")
@@ -1842,14 +1856,27 @@ async def validate(
         if summary["presumptive_total"] < 0:
             issues.append("Presumptive total cannot be negative.")
 
+        warnings = detailed_age_validation.get("warnings", [])
+        validation_status = "failed" if issues else ("warning" if warnings else "passed")
+
         return {
-            "status": "passed" if not issues else "failed",
-            "message": "Validation completed successfully." if not issues else "Validation failed.",
+            "status": validation_status,
+            "message": (
+                "Validation failed."
+                if issues
+                else (
+                    "Validation completed with a warning that requires confirmation."
+                    if warnings
+                    else "Validation completed successfully."
+                )
+            ),
             "sheet_checked": actual_target_tab,
             "matched_target_row": matched_row,
             "master_workbook_id": workbook_id,
             "error_count": len(issues),
+            "warning_count": len(warnings),
             "issues": issues,
+            "warnings": warnings,
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
@@ -1874,6 +1901,7 @@ async def upload(
     target_tab: str = Form(...),
     report_type: str = Form(...),
     spreadsheet_name: str = Form(...),
+    warning_acknowledged: bool = Form(False),
     file: UploadFile = File(...),
     _: bool = Depends(require_auth),
 ):
@@ -1955,6 +1983,22 @@ async def upload(
 
         source_df = load_source_df(temp_path, source_month_sheet)
         detailed_age_validation = enforce_detailed_age_validation(source_df)
+
+        if detailed_age_validation.get("warnings") and not warning_acknowledged:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "Notified exceeds Diagnosed in one or more detailed age bands. "
+                        "Please double-check the figures and explicitly confirm that they "
+                        "reflect the true program situation before uploading."
+                    ),
+                    "warning_count": detailed_age_validation.get("warning_count", 0),
+                    "warnings": detailed_age_validation.get("warnings", []),
+                    "requires_confirmation": True,
+                },
+            )
+
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
         updates = flatten_preview_to_updates(preview_payload)
