@@ -486,11 +486,47 @@ def find_facility_row(worksheet, facility_name: str) -> Optional[int]:
 
 
 def load_source_df(file_path: str, source_month_sheet: str) -> pd.DataFrame:
+    """
+    Load the exact selected monthly worksheet.
+
+    Do not silently fall back to the first worksheet. A silent fallback could
+    validate the wrong month and allow an invalid report to pass.
+    """
     source_tab = get_target_tab_from_month(source_month_sheet)
+
     try:
-        return pd.read_excel(file_path, sheet_name=source_tab, header=None)
-    except Exception:
-        return pd.read_excel(file_path, sheet_name=0, header=None)
+        workbook = pd.ExcelFile(file_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to open the uploaded Excel workbook: {str(exc)}",
+        )
+
+    available_tabs = [str(name).strip() for name in workbook.sheet_names]
+    tab_lookup = {name.lower(): name for name in available_tabs}
+    actual_tab = tab_lookup.get(source_tab.lower())
+
+    if not actual_tab:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"The selected month worksheet '{source_tab}' was not found in the uploaded report. "
+                    "Validation has been stopped to prevent checking the wrong worksheet."
+                ),
+                "selected_month": source_month_sheet,
+                "expected_worksheet": source_tab,
+                "available_worksheets": available_tabs,
+            },
+        )
+
+    try:
+        return pd.read_excel(workbook, sheet_name=actual_tab, header=None)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to read worksheet '{actual_tab}': {str(exc)}",
+        )
 
 
 def extract_grouped(df: pd.DataFrame, male_row: int, female_row: int) -> List[float]:
@@ -624,6 +660,322 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
         "art": extract_grouped(df, 294, 295),
     }
 
+
+
+# Detailed source age bands used in the Field Officer/Linkage Coordinator report.
+# These are validated BEFORE aggregation into 0–4, 5–14 and 15+ for the master sheet.
+SOURCE_AGE_BANDS = [
+    "<1", "1-4", "5-9", "10-14", "15-19",
+    "20-24", "25-29", "30-34", "35-39", "40-44",
+    "45-49", "50-54", "55-59", "60-64", "65+",
+]
+
+SEX_LABELS = ("Male", "Female")
+
+PROVIDER_ROW_PAIRS = {
+    "attendance": {
+        "facility": (5, 6), "pmv": (8, 9), "community": (11, 12),
+        "lab": (14, 15), "tba": (17, 18),
+    },
+    "screened": {
+        "facility": (24, 25), "pmv": (27, 28), "community": (30, 31),
+        "lab": (33, 34), "tba": (36, 37),
+    },
+    "presumptive": {
+        "facility": (43, 44), "pmv": (46, 47), "community": (49, 50),
+        "lab": (52, 53), "tba": (55, 56),
+    },
+    "diagnosed": {
+        "facility": (81, 82), "pmv": (84, 85), "community": (87, 88),
+        "lab": (90, 91), "tba": (93, 94),
+    },
+    "notified": {
+        "facility": (215, 216), "pmv": (218, 219), "community": (221, 222),
+        "lab": (224, 225), "tba": (227, 228),
+    },
+}
+
+EVALUATED_ROW_PAIRS = [
+    (62, 63), (65, 66), (68, 69), (71, 72), (74, 75),
+]
+
+NOTIFIED_BREAKDOWN_ROW_PAIRS = [
+    (241, 242), (244, 245), (247, 248), (250, 251), (253, 254),
+]
+
+CATEGORY_STARTED_ROW_PAIRS = {
+    "new": (270, 271),
+    "relapse": (273, 274),
+    "other": (276, 277),
+}
+
+HIV_STATUS_ROW_PAIRS = {
+    "positive": (280, 281),
+    "negative": (283, 284),
+    "unknown": (286, 287),
+}
+
+CPT_ROW_PAIR = (290, 291)
+ART_ROW_PAIR = (294, 295)
+
+
+def extract_detailed_age_pair(df: pd.DataFrame, male_row: int, female_row: int) -> Dict[str, List[float]]:
+    """Return all 15 source age bands separately for male and female rows."""
+    return {
+        "Male": [clean_number(df.iloc[male_row, c]) for c in range(3, 18)],
+        "Female": [clean_number(df.iloc[female_row, c]) for c in range(3, 18)],
+    }
+
+
+def add_detailed_pairs(*pairs: Dict[str, List[float]]) -> Dict[str, List[float]]:
+    result = {sex: [0] * len(SOURCE_AGE_BANDS) for sex in SEX_LABELS}
+    for pair in pairs:
+        for sex in SEX_LABELS:
+            for idx, value in enumerate(pair[sex]):
+                result[sex][idx] += clean_number(value)
+    return result
+
+
+def extract_provider_detailed(df: pd.DataFrame, section: str) -> Dict[str, Dict[str, List[float]]]:
+    return {
+        provider: extract_detailed_age_pair(df, male_row, female_row)
+        for provider, (male_row, female_row) in PROVIDER_ROW_PAIRS[section].items()
+    }
+
+
+def aggregate_provider_detailed(provider_data: Dict[str, Dict[str, List[float]]]) -> Dict[str, List[float]]:
+    return add_detailed_pairs(*provider_data.values())
+
+
+def extract_many_detailed(df: pd.DataFrame, row_pairs: List[Tuple[int, int]]) -> Dict[str, List[float]]:
+    return add_detailed_pairs(*(extract_detailed_age_pair(df, m, f) for m, f in row_pairs))
+
+
+def _age_issue(
+    rule: str,
+    upstream_name: str,
+    downstream_name: str,
+    upstream_value: float,
+    downstream_value: float,
+    sex: str,
+    age_band: str,
+    provider: Optional[str] = None,
+    relation: str = "lte",
+) -> Dict[str, Any]:
+    provider_text = f" for provider '{provider}'" if provider else ""
+    if relation == "equal":
+        message = (
+            f"Detailed age-band mismatch{provider_text}: {downstream_name} must equal "
+            f"{upstream_name} for {sex} {age_band}. "
+            f"{upstream_name}={upstream_value}, {downstream_name}={downstream_value}."
+        )
+    else:
+        message = (
+            f"Detailed age-band cascade error{provider_text}: {downstream_name} cannot exceed "
+            f"{upstream_name} for {sex} {age_band}. "
+            f"{upstream_name}={upstream_value}, {downstream_name}={downstream_value}."
+        )
+    return {
+        "rule": rule,
+        "provider": provider,
+        "sex": sex,
+        "age_band": age_band,
+        "upstream_indicator": upstream_name,
+        "downstream_indicator": downstream_name,
+        "upstream_value": upstream_value,
+        "downstream_value": downstream_value,
+        "message": message,
+    }
+
+
+def compare_detailed_age_bands(
+    upstream: Dict[str, List[float]],
+    downstream: Dict[str, List[float]],
+    upstream_name: str,
+    downstream_name: str,
+    rule: str,
+    provider: Optional[str] = None,
+    require_equal: bool = False,
+) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    for sex in SEX_LABELS:
+        for idx, age_band in enumerate(SOURCE_AGE_BANDS):
+            up = clean_number(upstream[sex][idx])
+            down = clean_number(downstream[sex][idx])
+            invalid = (down != up) if require_equal else (down > up)
+            if invalid:
+                issues.append(_age_issue(
+                    rule=rule,
+                    upstream_name=upstream_name,
+                    downstream_name=downstream_name,
+                    upstream_value=up,
+                    downstream_value=down,
+                    sex=sex,
+                    age_band=age_band,
+                    provider=provider,
+                    relation="equal" if require_equal else "lte",
+                ))
+    return issues
+
+
+def validate_detailed_age_template(df: pd.DataFrame) -> None:
+    """
+    Confirm that the selected worksheet has the expected detailed DHIS age-band
+    layout before any cascade validation or aggregation is performed.
+    """
+    expected_headers = [
+        "<1", "1-4", "5-9", "10-14", "15-19",
+        "20-24", "25-29", "30-34", "35-39", "40-44",
+        "45-49", "50-54", "55-59", "60-64", "65+",
+    ]
+
+    if df.shape[0] <= 295 or df.shape[1] < 18:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "The uploaded TB report does not contain the complete expected "
+                    "Field Officer/Linkage Coordinator template."
+                ),
+                "minimum_rows_required": 296,
+                "minimum_columns_required": 18,
+                "rows_found": int(df.shape[0]),
+                "columns_found": int(df.shape[1]),
+            },
+        )
+
+    def normalize_age_header(value: Any) -> str:
+        value = "" if value is None or pd.isna(value) else str(value)
+        value = value.strip().replace("–", "-").replace("—", "-")
+        value = re.sub(r"\s+", "", value)
+        return value.lower()
+
+    actual_headers = [
+        normalize_age_header(df.iloc[4, col])
+        for col in range(3, 18)
+    ]
+    expected_normalized = [normalize_age_header(value) for value in expected_headers]
+
+    if actual_headers != expected_normalized:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "Detailed age-band headers do not match the expected DHIS structure. "
+                    "Validation and upload have been stopped."
+                ),
+                "expected_age_bands": expected_headers,
+                "age_bands_found": [
+                    clean_cell_value(df.iloc[4, col])
+                    for col in range(3, 18)
+                ],
+            },
+        )
+
+
+def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Validate the original DHIS-style age bands before any aggregation.
+
+    Rules:
+    - Screened <= Attendance, by provider, sex and detailed age band.
+    - Presumptive <= Screened, by provider, sex and detailed age band.
+    - Evaluated <= Presumptive (all providers combined).
+    - Diagnosed <= Evaluated (all providers combined).
+    - Notified <= Diagnosed (all providers combined).
+    - Notified diagnostic breakdown must equal total notified, by sex/age band.
+    - Treatment started <= Notified.
+    - Treatment-category total must equal HIV-status total, by sex/age band.
+    - CPT and ART <= HIV-positive, by sex/age band.
+    """
+    validate_detailed_age_template(df)
+    issues: List[Dict[str, Any]] = []
+
+    attendance = extract_provider_detailed(df, "attendance")
+    screened = extract_provider_detailed(df, "screened")
+    presumptive = extract_provider_detailed(df, "presumptive")
+    diagnosed = extract_provider_detailed(df, "diagnosed")
+    notified = extract_provider_detailed(df, "notified")
+
+    for provider in PROVIDER_ROW_PAIRS["attendance"].keys():
+        issues.extend(compare_detailed_age_bands(
+            attendance[provider], screened[provider],
+            "Attendance", "Screened", "screened_not_above_attendance", provider,
+        ))
+        issues.extend(compare_detailed_age_bands(
+            screened[provider], presumptive[provider],
+            "Screened", "Presumptive", "presumptive_not_above_screened", provider,
+        ))
+
+    presumptive_total = aggregate_provider_detailed(presumptive)
+    evaluated_total = extract_many_detailed(df, EVALUATED_ROW_PAIRS)
+    diagnosed_total = aggregate_provider_detailed(diagnosed)
+    notified_total = aggregate_provider_detailed(notified)
+    notified_breakdown_total = extract_many_detailed(df, NOTIFIED_BREAKDOWN_ROW_PAIRS)
+
+    category_started_total = extract_many_detailed(df, list(CATEGORY_STARTED_ROW_PAIRS.values()))
+    hiv_status_total = extract_many_detailed(df, list(HIV_STATUS_ROW_PAIRS.values()))
+    hiv_positive = extract_detailed_age_pair(df, *HIV_STATUS_ROW_PAIRS["positive"])
+    cpt = extract_detailed_age_pair(df, *CPT_ROW_PAIR)
+    art = extract_detailed_age_pair(df, *ART_ROW_PAIR)
+
+    issues.extend(compare_detailed_age_bands(
+        presumptive_total, evaluated_total,
+        "Presumptive", "Presumptive evaluated", "evaluated_not_above_presumptive",
+    ))
+    issues.extend(compare_detailed_age_bands(
+        evaluated_total, diagnosed_total,
+        "Presumptive evaluated", "Diagnosed", "diagnosed_not_above_evaluated",
+    ))
+    issues.extend(compare_detailed_age_bands(
+        diagnosed_total, notified_total,
+        "Diagnosed", "Notified", "notified_not_above_diagnosed",
+    ))
+    issues.extend(compare_detailed_age_bands(
+        notified_total, notified_breakdown_total,
+        "Total notified", "Notified diagnostic breakdown",
+        "notified_breakdown_equals_notified", require_equal=True,
+    ))
+    issues.extend(compare_detailed_age_bands(
+        notified_total, category_started_total,
+        "Notified", "Treatment started", "treatment_started_not_above_notified",
+    ))
+    issues.extend(compare_detailed_age_bands(
+        category_started_total, hiv_status_total,
+        "Treatment-category total", "HIV-status total",
+        "hiv_status_equals_treatment_started", require_equal=True,
+    ))
+    issues.extend(compare_detailed_age_bands(
+        hiv_positive, cpt, "HIV positive", "CPT", "cpt_not_above_hiv_positive",
+    ))
+    issues.extend(compare_detailed_age_bands(
+        hiv_positive, art, "HIV positive", "ART", "art_not_above_hiv_positive",
+    ))
+
+    return {
+        "status": "passed" if not issues else "failed",
+        "error_count": len(issues),
+        "issues": issues,
+        "age_bands_checked": SOURCE_AGE_BANDS,
+    }
+
+
+def enforce_detailed_age_validation(df: pd.DataFrame) -> Dict[str, Any]:
+    result = validate_detailed_source_age_bands(df)
+    if result["issues"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "Detailed source age-band validation failed. Correct the Field Officer/"
+                    "Linkage Coordinator report before aggregation or upload."
+                ),
+                "error_count": result["error_count"],
+                "age_bands_checked": result["age_bands_checked"],
+                "issues": result["issues"],
+            },
+        )
+    return result
 
 def validation_summary_from_source_blocks(source_blocks: Dict[str, Any]) -> Dict[str, float]:
     return {
@@ -1303,7 +1655,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running.", "version": "pmtct-json-safe-v3"}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v5"}
 
 
 @app.get("/api/upload-logs")
@@ -1383,6 +1735,7 @@ async def preview(
             )
 
         source_df = load_source_df(temp_path, source_month_sheet)
+        detailed_age_validation = enforce_detailed_age_validation(source_df)
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
         summary = validation_summary_from_source_blocks(source_blocks)
@@ -1399,6 +1752,7 @@ async def preview(
             "uploaded_filename": file.filename,
             "matched_target_row": matched_row,
             "writes": preview_payload,
+            "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
 
@@ -1476,10 +1830,11 @@ async def validate(
             )
 
         source_df = load_source_df(temp_path, source_month_sheet)
+        detailed_age_validation = validate_detailed_source_age_bands(source_df)
         source_blocks = build_source_blocks(source_df)
         summary = validation_summary_from_source_blocks(source_blocks)
 
-        issues = []
+        issues = [item["message"] for item in detailed_age_validation["issues"]]
         if summary["attendance_total"] <= 0:
             issues.append("Attendance total is zero or invalid.")
         if summary["screened_total"] <= 0:
@@ -1495,6 +1850,7 @@ async def validate(
             "master_workbook_id": workbook_id,
             "error_count": len(issues),
             "issues": issues,
+            "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
 
@@ -1598,6 +1954,7 @@ async def upload(
             )
 
         source_df = load_source_df(temp_path, source_month_sheet)
+        detailed_age_validation = enforce_detailed_age_validation(source_df)
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
         updates = flatten_preview_to_updates(preview_payload)
@@ -1635,6 +1992,7 @@ async def upload(
             "matched_target_row": matched_row,
             "updated_cells": successful_updates,
             "skipped_cells": failed_updates,
+            "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
 

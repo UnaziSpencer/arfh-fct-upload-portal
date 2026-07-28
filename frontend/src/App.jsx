@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import facilities from "./data";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://arfh-fct-upload-portal.onrender.com";
 const PASSWORD_STORAGE_KEY = "arfh_app_password";
@@ -6,107 +7,6 @@ const PASSWORD_STORAGE_KEY = "arfh_app_password";
 const REPORT_TYPES = {
   PPM: "PPM ETL Upload",
   PMTCT: "Community PMTCT Upload",
-};
-
-const FACILITY_MAPPING = {
-  Abaji: ["Ni'ma Clinic", "St Peter Hospital"],
-  AMAC: [
-    "ECWA Comprehensive Clinic",
-    "Jikwoyi Medical Center",
-    "Sisters of Nativity Hospital Jikwoyi",
-    "Freedom Scan Medical Centre",
-    "Pan-Raf Hospital",
-    "Danfers Hospital Pyakasa",
-    "Massan Clinic Lugbe",
-    "Medical Missionaries of Mary Aco, Lugbe",
-    "Divine Reign Ultimate Hosp. Sauka",
-    "Ralph Clinic Bassan Jiwa",
-    "Sabo Clinic Bassan Jiwa",
-    "Yabisam Hospital",
-    "Daniel David Clinic and Maternity",
-    "Excel Hospital",
-    "Lona Hospital",
-    "Wristberg Hospital",
-    "Faith Mediplex Karmo",
-    "Gopher Ark Hospital Ltd Life Camp",
-    "De Mary's Central Hospital FHA",
-    "Access Hospital Gwagwa",
-    "Consolation Clinic and Maternity Jiwa",
-    "Cornelian Maternity and Rural Health-Gidan Mangoro",
-    "Cream Medics",
-    "God'S Time Hospital Gwagwa",
-    "Success Clinic and Maternity",
-    "The Crown Hospital Gwagwa",
-    "Get Well Hospital Tasha I",
-    "Ngoziben Clinic and Maternity Jiwa",
-    "Una Clinic",
-    "Garki Hospital Abuja",
-    "Gem of Hope Medical Centre",
-    "Queens Clinic And Maternity",
-    "Good Morning Maternity Hospital Apo",
-    "Joyland Medical Centre and Children Hospital Dakwo",
-    "Rouz Hospital and Maternity Apo",
-    "AIDS Health Foundation",
-    "Sahad Hospitals",
-    "Surgicare Hospital",
-    "iMAF Hospital and Maternity",
-    "Medimore Hospital",
-    "Medford Hospital",
-    "Al-Nun Maternity Home Iddo",
-    "Arewa Specialist Hospital and Diagnostics",
-    "Bethel Clinic and Maternity Iddo",
-    "Biocycle Clinic",
-    "Ebelechukwu Clinic and Maternity Kabusa",
-    "Ganzawo Clinic and Maternity",
-    "Helping Hand Clinic",
-    "Hospimed Clinic and Maternity",
-    "International Organization for Migration (IOM)",
-    "Kapital Hospital",
-    "Kemas Global Clinic",
-    "Lofahad Clinic and Maternity",
-    "Meavour Clinic",
-    "Nobel Hope Karmo",
-    "Olive Hospital and Maternity",
-    "Paafag Clinic and Maternity",
-    "Saffron Hospital",
-    "Sophy Hospital and Maternity",
-    "Standard Medical Centre",
-    "Taimako Clinic",
-    "The Comforter Hospital",
-    "Tolbert Specialist Hospital Gaduwa",
-    "Evangelical Church of West Africa (ECWA) Health Clinic - Kabusa",
-    "Guzape Police Clinic",
-    "Zadawura Nursing Home",
-  ],
-  Bwari: [
-    "Express Hospital",
-    "VINCA HOSPITAL",
-    "Anglican Hospital",
-    "Unity Clinic and Maternity",
-    "Jalel Bio Clinicals",
-    "Omega Hospital",
-    "Dawaki Medical Centre",
-    "Royal Lords Clinic and Maternity",
-    "Daughters of Charity (DOC) Hospital Kubwa",
-    "Gabic Divine Clinic and Maternity",
-    "Our Lady of Fatima Hospital",
-    "Summit Hospital",
-    "New Care Hospital and Maternity",
-  ],
-  Gwagwalada: [
-    "Divine Clinic and Maternity",
-    "Gonita Clinic and Maternity",
-    "Jerab Hospital",
-    "Primecare Hospital (Formerly Mummen Hospital)",
-    "St Mary Catholic Hospital",
-    "Ehibachi Clinic and Maternity",
-    "Hope Clinic and Maternity",
-    "Minat Hospital",
-    "Nasara Hospital",
-    "Ojochugun Health Clinic",
-  ],
-  Kuje: ["Alfa Hospital", "Gede Clinic", "Ila Hospital", "Whitedove Hospital"],
-  Kwali: ["Abufati Maternity", "Heti Hospital", "Rhema Hospital", "Wisdom Clinic and Maternity"],
 };
 
 const MONTH_OPTIONS = [
@@ -139,8 +39,15 @@ export default function App() {
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
 
-  const lgaOptions = useMemo(() => Object.keys(FACILITY_MAPPING), []);
-  const facilityOptions = useMemo(() => FACILITY_MAPPING[lga] || [], [lga]);
+  const stateOptions = useMemo(() => Object.keys(facilities), []);
+  const lgaOptions = useMemo(
+    () => Object.keys(facilities[stateValue] || {}),
+    [stateValue]
+  );
+  const facilityOptions = useMemo(
+    () => facilities[stateValue]?.[lga] || [],
+    [stateValue, lga]
+  );
 
   const filteredFacilities = useMemo(() => {
     if (!facilitySearch.trim()) return facilityOptions;
@@ -148,6 +55,13 @@ export default function App() {
       item.toLowerCase().includes(facilitySearch.toLowerCase())
     );
   }, [facilityOptions, facilitySearch]);
+
+  useEffect(() => {
+    if (!lgaOptions.includes(lga)) {
+      setLga(lgaOptions[0] || "");
+      setFacilitySearch("");
+    }
+  }, [lgaOptions, lga]);
 
   useEffect(() => {
     if (!isPmtct && !facilityOptions.includes(facility)) {
@@ -168,7 +82,7 @@ export default function App() {
     setUploadData(null);
     setErrorMessage("");
     setSuccessMessage("");
-  }, [reportType, month, year, lga, facility]);
+  }, [reportType, month, year, stateValue, lga, facility]);
 
   const validationPassed = validationData?.status === "passed";
 
@@ -236,7 +150,7 @@ export default function App() {
     formData.append("report_type", reportType);
     formData.append(
       "spreadsheet_name",
-      isPmtct ? "Community PMTCT reporting template" : "FCT PPM Indicator reporting template"
+      isPmtct ? "Community PMTCT reporting template" : `${stateValue} PPM Indicator reporting template`
     );
     formData.append("file", file);
     return formData;
@@ -369,7 +283,7 @@ export default function App() {
               </div>
 
               <h1 className="max-w-xl text-4xl font-bold leading-tight md:text-5xl">
-                ARFH FCT Upload Portal
+                ARFH Multi-State Upload Portal
               </h1>
 
               <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-100">
@@ -380,7 +294,7 @@ export default function App() {
             <section className="p-8 md:p-10">
               <h2 className="text-3xl font-bold text-slate-900">Team Login</h2>
               <p className="mt-2 text-slate-600">
-                Use the access password provided to authorised ARFH FCT users.
+                Use the access password provided to authorised ARFH reporting users.
               </p>
 
               <div className="mt-8 space-y-4">
@@ -461,8 +375,17 @@ export default function App() {
                 </Field>
 
                 <Field label="State">
-                  <select value={stateValue} onChange={(e) => setStateValue(e.target.value)} className={inputClass}>
-                    <option>FCT</option>
+                  <select
+                    value={stateValue}
+                    onChange={(e) => {
+                      setStateValue(e.target.value);
+                      setFacilitySearch("");
+                    }}
+                    className={inputClass}
+                  >
+                    {stateOptions.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
                   </select>
                 </Field>
 
