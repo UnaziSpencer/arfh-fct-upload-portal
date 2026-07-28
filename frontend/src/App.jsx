@@ -238,6 +238,10 @@ export default function App() {
       "spreadsheet_name",
       isPmtct ? "Community PMTCT reporting template" : "FCT PPM Indicator reporting template"
     );
+    formData.append(
+      "warning_acknowledged",
+      validationData?.warning_confirmed ? "true" : "false"
+    );
     formData.append("file", file);
     return formData;
   };
@@ -255,7 +259,11 @@ export default function App() {
         data?.message ||
         `Request failed with status ${status}`;
 
-      const issues = Array.isArray(detail.issues) ? detail.issues : [];
+      const issues = Array.isArray(detail.issues)
+        ? detail.issues
+        : Array.isArray(detail.warnings)
+          ? detail.warnings
+          : [];
 
       if (issues.length > 0) {
         const issueLines = issues.map((issue, index) => {
@@ -377,8 +385,48 @@ export default function App() {
       resetFeedback();
       setLoadingAction("validate");
       const data = await postToBackend("/api/validate");
+
+      if (data.status === "warning" && Array.isArray(data.warnings) && data.warnings.length > 0) {
+        const warningText = data.warnings
+          .map((warning, index) => `${index + 1}. ${warning.message || "Notified exceeds Diagnosed."}`)
+          .join("\n\n");
+
+        const confirmed = window.confirm(
+          `Validation warning\n\n${warningText}\n\n` +
+            "This can occur when a person diagnosed in a previous reporting month " +
+            "starts treatment in the current month.\n\n" +
+            "Have you double-checked the figures and confirmed that they reflect the true program situation?"
+        );
+
+        if (confirmed) {
+          setValidationData({
+            ...data,
+            status: "passed",
+            warning_confirmed: true,
+          });
+          setSuccessMessage(
+            "Validation completed. The Notified versus Diagnosed warning was reviewed and confirmed."
+          );
+        } else {
+          setValidationData({
+            ...data,
+            warning_confirmed: false,
+          });
+          setErrorMessage(
+            "Validation paused. Please review the Notified and Diagnosed figures, then validate again."
+          );
+        }
+        return;
+      }
+
       setValidationData(data);
-      setSuccessMessage(data.message || "Validation completed.");
+
+      if (data.status === "failed") {
+        const issueText = Array.isArray(data.issues) ? data.issues.join("\n") : "";
+        setErrorMessage(issueText || data.message || "Validation failed.");
+      } else {
+        setSuccessMessage(data.message || "Validation completed.");
+      }
     } catch (error) {
       setErrorMessage(error.message || "Validation failed.");
     } finally {
