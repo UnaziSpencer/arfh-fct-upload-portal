@@ -372,7 +372,25 @@ export default function App() {
       setLoadingAction("preview");
       const data = await postToBackend("/api/preview");
       setPreviewData(data);
-      setSuccessMessage(data.message || "Preview loaded successfully.");
+
+      const previewWarnings = data?.detailed_age_validation?.warnings || [];
+
+      if (previewWarnings.length > 0) {
+        const warningText = previewWarnings
+          .map((warning, index) => `${index + 1}. ${warning.message || "Validation warning detected."}`)
+          .join("\n\n");
+
+        window.alert(
+          `Preview loaded with validation warning(s).\n\n${warningText}\n\n` +
+            "Please click Validate Totals to review and confirm before upload."
+        );
+
+        setSuccessMessage(
+          `Preview loaded with ${previewWarnings.length} warning(s). Click Validate Totals to review and confirm.`
+        );
+      } else {
+        setSuccessMessage(data.message || "Preview loaded successfully.");
+      }
     } catch (error) {
       setErrorMessage(error.message || "Preview failed.");
     } finally {
