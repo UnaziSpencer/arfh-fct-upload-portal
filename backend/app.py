@@ -630,7 +630,8 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "tba":       extract_grouped(df, 227, 228),
         },
         "child_tb_notification": under15_total(df, 234, 235),
-        "all_notified_xpert": sum_pair_total(df, 241, 242),
+        # Section 9: All notified cases who had Xpert (Excel rows 238-239; pandas 237-238).
+        "all_notified_xpert": sum_pair_total(df, 237, 238),
         "notified_breakdown": {
             "mtb_detected": sum_pair_total(df, 241, 242),
             "afb":          sum_pair_total(df, 244, 245),
@@ -698,6 +699,8 @@ PROVIDER_ROW_PAIRS = {
 EVALUATED_ROW_PAIRS = [
     (62, 63), (65, 66), (68, 69), (71, 72), (74, 75),
 ]
+
+ALL_NOTIFIED_XPERT_ROW_PAIR = (237, 238)
 
 NOTIFIED_BREAKDOWN_ROW_PAIRS = [
     (241, 242), (244, 245), (247, 248), (250, 251), (253, 254),
@@ -883,7 +886,8 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     - Evaluated <= Presumptive (all providers combined).
     - Diagnosed <= Evaluated (all providers combined).
     - Notified <= Diagnosed (all providers combined).
-    - Notified diagnostic breakdown mismatch is a confirmation warning, by sex/age band.
+    - Notified diagnostic breakdown must equal total notified, by sex/age band.
+    - Xpert-diagnosed notified cases must be included among all notified cases who had Xpert.
     - Treatment started <= Notified.
     - Treatment-category total must equal HIV-status total, by sex/age band.
     - CPT and ART <= HIV-positive, by sex/age band.
@@ -914,6 +918,13 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     notified_total = aggregate_provider_detailed(notified)
     notified_breakdown_total = extract_many_detailed(df, NOTIFIED_BREAKDOWN_ROW_PAIRS)
 
+    all_notified_xpert_detailed = extract_detailed_age_pair(
+        df, *ALL_NOTIFIED_XPERT_ROW_PAIR
+    )
+    notified_xpert_diagnosis = extract_detailed_age_pair(
+        df, *NOTIFIED_BREAKDOWN_ROW_PAIRS[0]
+    )
+
     category_started_total = extract_many_detailed(df, list(CATEGORY_STARTED_ROW_PAIRS.values()))
     hiv_status_total = extract_many_detailed(df, list(HIV_STATUS_ROW_PAIRS.values()))
     hiv_positive = extract_detailed_age_pair(df, *HIV_STATUS_ROW_PAIRS["positive"])
@@ -942,22 +953,17 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
             "that the figures reflect the true program situation."
         )
     warnings.extend(notified_warnings)
-    notified_breakdown_warnings = compare_detailed_age_bands(
+    errors.extend(compare_detailed_age_bands(
         notified_total, notified_breakdown_total,
         "Total notified", "Notified diagnostic breakdown",
-        "notified_breakdown_mismatch_warning", require_equal=True,
-    )
-    for item in notified_breakdown_warnings:
-        item["severity"] = "warning"
-        item["message"] = (
-            f"Notified diagnostic breakdown does not equal Total notified for "
-            f"{item['sex']} {item['age_band']}. "
-            f"Total notified={item['upstream_value']}, "
-            f"Notified diagnostic breakdown={item['downstream_value']}. "
-            "Please double-check that all diagnostic categories were reviewed and "
-            "confirm that the difference reflects the true reporting situation."
-        )
-    warnings.extend(notified_breakdown_warnings)
+        "notified_breakdown_equals_notified", require_equal=True,
+    ))
+    errors.extend(compare_detailed_age_bands(
+        all_notified_xpert_detailed, notified_xpert_diagnosis,
+        "All notified cases who had Xpert",
+        "Notified cases diagnosed by Xpert MTB/RIF",
+        "xpert_diagnosed_not_above_all_notified_who_had_xpert",
+    ))
     errors.extend(compare_detailed_age_bands(
         notified_total, category_started_total,
         "Notified", "Treatment started", "treatment_started_not_above_notified",
@@ -1680,7 +1686,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v7"}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v8"}
 
 
 @app.get("/api/upload-logs")
