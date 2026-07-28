@@ -883,7 +883,7 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     - Evaluated <= Presumptive (all providers combined).
     - Diagnosed <= Evaluated (all providers combined).
     - Notified <= Diagnosed (all providers combined).
-    - Notified diagnostic breakdown must equal total notified, by sex/age band.
+    - Notified diagnostic breakdown mismatch is a confirmation warning, by sex/age band.
     - Treatment started <= Notified.
     - Treatment-category total must equal HIV-status total, by sex/age band.
     - CPT and ART <= HIV-positive, by sex/age band.
@@ -942,11 +942,22 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
             "that the figures reflect the true program situation."
         )
     warnings.extend(notified_warnings)
-    errors.extend(compare_detailed_age_bands(
+    notified_breakdown_warnings = compare_detailed_age_bands(
         notified_total, notified_breakdown_total,
         "Total notified", "Notified diagnostic breakdown",
-        "notified_breakdown_equals_notified", require_equal=True,
-    ))
+        "notified_breakdown_mismatch_warning", require_equal=True,
+    )
+    for item in notified_breakdown_warnings:
+        item["severity"] = "warning"
+        item["message"] = (
+            f"Notified diagnostic breakdown does not equal Total notified for "
+            f"{item['sex']} {item['age_band']}. "
+            f"Total notified={item['upstream_value']}, "
+            f"Notified diagnostic breakdown={item['downstream_value']}. "
+            "Please double-check that all diagnostic categories were reviewed and "
+            "confirm that the difference reflects the true reporting situation."
+        )
+    warnings.extend(notified_breakdown_warnings)
     errors.extend(compare_detailed_age_bands(
         notified_total, category_started_total,
         "Notified", "Treatment started", "treatment_started_not_above_notified",
@@ -1669,7 +1680,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v6"}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v7"}
 
 
 @app.get("/api/upload-logs")
