@@ -15,7 +15,7 @@ from google.oauth2.service_account import Credentials
 
 from database import init_db, get_connection
 
-app = FastAPI(title="ARFH Multi-State Upload Backend")
+app = FastAPI(title="ARFH FCT Upload Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,15 +58,12 @@ def require_auth(x_app_password: str = Header(default="")):
 
     return True
 
-# State-specific PPM master workbook IDs.
-# Key format: (state, year, quarter)
-STATE_MASTER_WORKBOOK_IDS = {
-    ("FCT", "2026", "Q3"): "1QIPGM4kai4iHSUuVXsnqMNSBCbdd5KGYlC3eDA6q8y8",
-    ("Ekiti", "2026", "Q3"): "1_NU609KEjzfUHj2xORgiHoC4Pkyd_jv-iX7BpVq9OI4",
-    ("Kogi", "2026", "Q3"): "1rGFblFrDFaq2_01YLhoWMgMfzNxgitxydy4XGKkBSZU",
-    ("Kwara", "2026", "Q3"): "1u8wC4NW7ZavHIpW3_xXl-upPp80aEVE9aKCOZEAeAN8",
-    ("Nasarawa", "2026", "Q3"): "1D52Ark09Il1ymIPYjQMmrCvrShhMQJTOnqhtLbtqQkU",
-    ("Rivers", "2026", "Q3"): "14woQRg-qC-QKVgTjwUkCuHhedcgwBOOz1zginXUn4b8",
+# Put your real workbook IDs here.
+MASTER_WORKBOOK_IDS = {
+    ("2026", "Q1"): "1WO6ck6-ZDe-4tozRkvG-bj0q7B7KgBGm0Ar7AebESIo",
+    ("2026", "Q2"): "1UtHfkfyQbZgXhbGul9RVPWpcWo_8fQliVDCsM0DL3tM",
+    ("2026", "Q3"): "PASTE_YOUR_REAL_2026_Q3_WORKBOOK_ID_HERE",
+    ("2026", "Q4"): "PASTE_YOUR_REAL_2026_Q4_WORKBOOK_ID_HERE",
 }
 
 MONTH_TO_TAB = {
@@ -236,47 +233,14 @@ def get_quarter_from_month(report_month: str) -> str:
     return quarter
 
 
-def normalize_state_name(state: str) -> str:
-    """Return the canonical configured state name."""
-    clean_state = normalize_text(state)
-    state_lookup = {
-        "fct": "FCT",
-        "federal capital territory": "FCT",
-        "ekiti": "Ekiti",
-        "kogi": "Kogi",
-        "kwara": "Kwara",
-        "nasarawa": "Nasarawa",
-        "rivers": "Rivers",
-    }
-    canonical = state_lookup.get(clean_state)
-    if not canonical:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": f"Unsupported state: {state}",
-                "supported_states": sorted(set(state_lookup.values())),
-            },
-        )
-    return canonical
-
-
-def get_master_workbook_id(state: str, report_year: str, report_month: str) -> str:
+def get_master_workbook_id(report_year: str, report_month: str) -> str:
     quarter = get_quarter_from_month(report_month)
-    canonical_state = normalize_state_name(state)
-    workbook_id = STATE_MASTER_WORKBOOK_IDS.get((canonical_state, str(report_year), quarter))
+    workbook_id = MASTER_WORKBOOK_IDS.get((str(report_year), quarter))
 
     if not workbook_id or workbook_id.startswith("PUT_") or workbook_id.startswith("PASTE_"):
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": (
-                    f"Master workbook ID is not configured for {canonical_state}, "
-                    f"year {report_year}, quarter {quarter}."
-                ),
-                "state": canonical_state,
-                "year": str(report_year),
-                "quarter": quarter,
-            },
+            detail=f"Master workbook ID is not configured for year {report_year} and quarter {quarter}.",
         )
 
     return workbook_id
@@ -335,9 +299,9 @@ def get_gspread_client():
         )
 
 
-def open_master_sheet(state: str, report_year: str, report_month: str):
+def open_master_sheet(report_year: str, report_month: str):
     target_tab = get_target_tab_from_month(report_month)
-    workbook_id = get_master_workbook_id(state, report_year, report_month)
+    workbook_id = get_master_workbook_id(report_year, report_month)
     client = get_gspread_client()
 
     try:
@@ -666,8 +630,7 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
             "tba":       extract_grouped(df, 227, 228),
         },
         "child_tb_notification": under15_total(df, 234, 235),
-        # Section 9: All notified cases who had Xpert (Excel rows 238-239; pandas 237-238).
-        "all_notified_xpert": sum_pair_total(df, 237, 238),
+        "all_notified_xpert": sum_pair_total(df, 241, 242),
         "notified_breakdown": {
             "mtb_detected": sum_pair_total(df, 241, 242),
             "afb":          sum_pair_total(df, 244, 245),
@@ -735,8 +698,6 @@ PROVIDER_ROW_PAIRS = {
 EVALUATED_ROW_PAIRS = [
     (62, 63), (65, 66), (68, 69), (71, 72), (74, 75),
 ]
-
-ALL_NOTIFIED_XPERT_ROW_PAIR = (237, 238)
 
 NOTIFIED_BREAKDOWN_ROW_PAIRS = [
     (241, 242), (244, 245), (247, 248), (250, 251), (253, 254),
@@ -923,14 +884,12 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     - Diagnosed <= Evaluated (all providers combined).
     - Notified <= Diagnosed (all providers combined).
     - Notified diagnostic breakdown must equal total notified, by sex/age band.
-    - Xpert-diagnosed notified cases must be included among all notified cases who had Xpert.
     - Treatment started <= Notified.
     - Treatment-category total must equal HIV-status total, by sex/age band.
     - CPT and ART <= HIV-positive, by sex/age band.
     """
     validate_detailed_age_template(df)
-    errors: List[Dict[str, Any]] = []
-    warnings: List[Dict[str, Any]] = []
+    issues: List[Dict[str, Any]] = []
 
     attendance = extract_provider_detailed(df, "attendance")
     screened = extract_provider_detailed(df, "screened")
@@ -939,11 +898,11 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     notified = extract_provider_detailed(df, "notified")
 
     for provider in PROVIDER_ROW_PAIRS["attendance"].keys():
-        errors.extend(compare_detailed_age_bands(
+        issues.extend(compare_detailed_age_bands(
             attendance[provider], screened[provider],
             "Attendance", "Screened", "screened_not_above_attendance", provider,
         ))
-        errors.extend(compare_detailed_age_bands(
+        issues.extend(compare_detailed_age_bands(
             screened[provider], presumptive[provider],
             "Screened", "Presumptive", "presumptive_not_above_screened", provider,
         ))
@@ -954,75 +913,49 @@ def validate_detailed_source_age_bands(df: pd.DataFrame) -> Dict[str, Any]:
     notified_total = aggregate_provider_detailed(notified)
     notified_breakdown_total = extract_many_detailed(df, NOTIFIED_BREAKDOWN_ROW_PAIRS)
 
-    all_notified_xpert_detailed = extract_detailed_age_pair(
-        df, *ALL_NOTIFIED_XPERT_ROW_PAIR
-    )
-    notified_xpert_diagnosis = extract_detailed_age_pair(
-        df, *NOTIFIED_BREAKDOWN_ROW_PAIRS[0]
-    )
-
     category_started_total = extract_many_detailed(df, list(CATEGORY_STARTED_ROW_PAIRS.values()))
     hiv_status_total = extract_many_detailed(df, list(HIV_STATUS_ROW_PAIRS.values()))
     hiv_positive = extract_detailed_age_pair(df, *HIV_STATUS_ROW_PAIRS["positive"])
     cpt = extract_detailed_age_pair(df, *CPT_ROW_PAIR)
     art = extract_detailed_age_pair(df, *ART_ROW_PAIR)
 
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         presumptive_total, evaluated_total,
         "Presumptive", "Presumptive evaluated", "evaluated_not_above_presumptive",
     ))
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         evaluated_total, diagnosed_total,
         "Presumptive evaluated", "Diagnosed", "diagnosed_not_above_evaluated",
     ))
-    notified_warnings = compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         diagnosed_total, notified_total,
-        "Diagnosed", "Notified", "notified_above_diagnosed_warning",
-    )
-    for item in notified_warnings:
-        item["severity"] = "warning"
-        item["message"] = (
-            f"Notified exceeds Diagnosed for {item['sex']} {item['age_band']}. "
-            f"Diagnosed={item['upstream_value']}, Notified={item['downstream_value']}. "
-            "This may be correct when a person diagnosed in a previous reporting month "
-            "starts treatment in the current month. Please double-check and confirm "
-            "that the figures reflect the true program situation."
-        )
-    warnings.extend(notified_warnings)
-    errors.extend(compare_detailed_age_bands(
+        "Diagnosed", "Notified", "notified_not_above_diagnosed",
+    ))
+    issues.extend(compare_detailed_age_bands(
         notified_total, notified_breakdown_total,
         "Total notified", "Notified diagnostic breakdown",
         "notified_breakdown_equals_notified", require_equal=True,
     ))
-    errors.extend(compare_detailed_age_bands(
-        all_notified_xpert_detailed, notified_xpert_diagnosis,
-        "All notified cases who had Xpert",
-        "Notified cases diagnosed by Xpert MTB/RIF",
-        "xpert_diagnosed_not_above_all_notified_who_had_xpert",
-    ))
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         notified_total, category_started_total,
         "Notified", "Treatment started", "treatment_started_not_above_notified",
     ))
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         category_started_total, hiv_status_total,
         "Treatment-category total", "HIV-status total",
         "hiv_status_equals_treatment_started", require_equal=True,
     ))
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         hiv_positive, cpt, "HIV positive", "CPT", "cpt_not_above_hiv_positive",
     ))
-    errors.extend(compare_detailed_age_bands(
+    issues.extend(compare_detailed_age_bands(
         hiv_positive, art, "HIV positive", "ART", "art_not_above_hiv_positive",
     ))
 
-    status = "failed" if errors else ("warning" if warnings else "passed")
     return {
-        "status": status,
-        "error_count": len(errors),
-        "warning_count": len(warnings),
-        "issues": errors,
-        "warnings": warnings,
+        "status": "passed" if not issues else "failed",
+        "error_count": len(issues),
+        "issues": issues,
         "age_bands_checked": SOURCE_AGE_BANDS,
     }
 
@@ -1722,7 +1655,7 @@ def log_upload(
 
 @app.get("/")
 def root():
-    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v8"}
+    return {"message": "ARFH FCT backend is running.", "version": "pmtct-detailed-age-validation-v5"}
 
 
 @app.get("/api/upload-logs")
@@ -1778,7 +1711,6 @@ async def preview(
                 "target_tab": actual_target_tab,
                 "report_year": report_year,
                 "quarter": get_quarter_from_month(source_month_sheet),
-                "selected_state": selected_state,
                 "master_workbook_id": workbook_id,
                 "uploaded_filename": file.filename,
                 "source_rows_total": len(pmtct_result["source_rows"]),
@@ -1791,12 +1723,9 @@ async def preview(
             }
 
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            state=state,
             report_year=report_year,
             report_month=source_month_sheet,
         )
-
-        selected_state = normalize_state_name(state)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
@@ -1819,8 +1748,7 @@ async def preview(
             "target_tab": actual_target_tab,
             "report_year": report_year,
             "quarter": get_quarter_from_month(source_month_sheet),
-            "selected_state": selected_state,
-                "master_workbook_id": workbook_id,
+            "master_workbook_id": workbook_id,
             "uploaded_filename": file.filename,
             "matched_target_row": matched_row,
             "writes": preview_payload,
@@ -1879,7 +1807,6 @@ async def validate(
                 "message": "PMTCT validation completed successfully." if not issues else "PMTCT validation failed.",
                 "report_type": report_type,
                 "sheet_checked": actual_target_tab,
-                "selected_state": selected_state,
                 "master_workbook_id": workbook_id,
                 "error_count": len(issues),
                 "issues": issues,
@@ -1891,12 +1818,9 @@ async def validate(
             }
 
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            state=state,
             report_year=report_year,
             report_month=source_month_sheet,
         )
-
-        selected_state = normalize_state_name(state)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
@@ -1918,28 +1842,14 @@ async def validate(
         if summary["presumptive_total"] < 0:
             issues.append("Presumptive total cannot be negative.")
 
-        warnings = detailed_age_validation.get("warnings", [])
-        validation_status = "failed" if issues else ("warning" if warnings else "passed")
-
         return {
-            "status": validation_status,
-            "message": (
-                "Validation failed."
-                if issues
-                else (
-                    "Validation completed with a warning that requires confirmation."
-                    if warnings
-                    else "Validation completed successfully."
-                )
-            ),
+            "status": "passed" if not issues else "failed",
+            "message": "Validation completed successfully." if not issues else "Validation failed.",
             "sheet_checked": actual_target_tab,
             "matched_target_row": matched_row,
-            "selected_state": selected_state,
-                "master_workbook_id": workbook_id,
+            "master_workbook_id": workbook_id,
             "error_count": len(issues),
-            "warning_count": len(warnings),
             "issues": issues,
-            "warnings": warnings,
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
@@ -1964,7 +1874,6 @@ async def upload(
     target_tab: str = Form(...),
     report_type: str = Form(...),
     spreadsheet_name: str = Form(...),
-    warning_acknowledged: bool = Form(False),
     file: UploadFile = File(...),
     _: bool = Depends(require_auth),
 ):
@@ -2023,7 +1932,6 @@ async def upload(
                 "report_type": report_type,
                 "target_tab": actual_target_tab,
                 "quarter": get_quarter_from_month(source_month_sheet),
-                "selected_state": selected_state,
                 "master_workbook_id": workbook_id,
                 "uploaded_filename": file.filename,
                 "matched_existing_rows": len(pmtct_result["matched"]),
@@ -2034,12 +1942,9 @@ async def upload(
             }
 
         _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
-            state=state,
             report_year=report_year,
             report_month=source_month_sheet,
         )
-
-        selected_state = normalize_state_name(state)
 
         matched_row = find_facility_row(worksheet, facility_name)
         if not matched_row:
@@ -2050,22 +1955,6 @@ async def upload(
 
         source_df = load_source_df(temp_path, source_month_sheet)
         detailed_age_validation = enforce_detailed_age_validation(source_df)
-
-        if detailed_age_validation.get("warnings") and not warning_acknowledged:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": (
-                        "Notified exceeds Diagnosed in one or more detailed age bands. "
-                        "Please double-check the figures and explicitly confirm that they "
-                        "reflect the true program situation before uploading."
-                    ),
-                    "warning_count": detailed_age_validation.get("warning_count", 0),
-                    "warnings": detailed_age_validation.get("warnings", []),
-                    "requires_confirmation": True,
-                },
-            )
-
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
         updates = flatten_preview_to_updates(preview_payload)
@@ -2098,8 +1987,7 @@ async def upload(
             "message": message,
             "target_tab": actual_target_tab,
             "quarter": get_quarter_from_month(source_month_sheet),
-            "selected_state": selected_state,
-                "master_workbook_id": workbook_id,
+            "master_workbook_id": workbook_id,
             "uploaded_filename": file.filename,
             "matched_target_row": matched_row,
             "updated_cells": successful_updates,
