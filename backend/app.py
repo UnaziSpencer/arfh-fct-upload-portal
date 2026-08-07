@@ -1762,6 +1762,8 @@ async def preview(
         temp_path = save_upload_temporarily(file)
 
         if report_type == PMTCT_REPORT_TYPE:
+            selected_state = normalize_state_name(state)
+
             _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
                 report_year=report_year,
                 report_month=source_month_sheet,
@@ -1858,6 +1860,8 @@ async def validate(
         temp_path = save_upload_temporarily(file)
 
         if report_type == PMTCT_REPORT_TYPE:
+            selected_state = normalize_state_name(state)
+
             _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
                 report_year=report_year,
                 report_month=source_month_sheet,
@@ -1975,6 +1979,8 @@ async def upload(
         temp_path = save_upload_temporarily(file)
 
         if report_type == PMTCT_REPORT_TYPE:
+            selected_state = normalize_state_name(state)
+
             _, worksheet, workbook_id, actual_target_tab = open_pmtct_master_sheet(
                 report_year=report_year,
                 report_month=source_month_sheet,
