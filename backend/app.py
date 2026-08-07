@@ -101,6 +101,7 @@ MONTH_TO_QUARTER = {
 
 PMTCT_WORKBOOK_IDS = {
     ("2026", "Q2"): "13XZxAwsmZCZ8ECk_FI2UPUwqO5Wxmmxj7NUMClBVV3g",
+    ("2026", "Q3"): "19uLBY4PceVH0hghnVzxLOlE_hFrrXqTPE7-XBRhP6ow",
 }
 
 PMTCT_REPORT_TYPE = "Community PMTCT Upload"
