@@ -91,6 +91,14 @@ export default function App() {
     setSuccessMessage("");
   };
 
+  const clearWorkflowState = () => {
+    setPreviewData(null);
+    setValidationData(null);
+    setUploadData(null);
+    setErrorMessage("");
+    setSuccessMessage("");
+  };
+
   const handleLogin = async () => {
     const cleanPassword = password.trim();
 
@@ -136,22 +144,50 @@ export default function App() {
     "X-App-Password": localStorage.getItem(PASSWORD_STORAGE_KEY) || password,
   });
 
-  const buildFormData = () => {
+  const getCurrentRequestContext = () => ({
+    facility_name: isPmtct ? "Community PMTCT Cascade" : facility,
+    lga,
+    state: stateValue,
+    report_year: year,
+    source_month_sheet: month,
+    target_tab: month,
+    report_type: reportType,
+    spreadsheet_name: isPmtct
+      ? "Community PMTCT reporting template"
+      : `${stateValue} PPM Indicator reporting template`,
+    file_name: file?.name || "",
+    file_size: file?.size || 0,
+    file_last_modified: file?.lastModified || 0,
+  });
+
+  const contextsMatch = (a, b) => {
+    if (!a || !b) return false;
+    return (
+      a.facility_name === b.facility_name &&
+      a.lga === b.lga &&
+      a.state === b.state &&
+      a.report_year === b.report_year &&
+      a.source_month_sheet === b.source_month_sheet &&
+      a.report_type === b.report_type &&
+      a.file_name === b.file_name &&
+      a.file_size === b.file_size &&
+      a.file_last_modified === b.file_last_modified
+    );
+  };
+
+  const buildFormData = (context) => {
     if (!file) throw new Error("Please choose an Excel file first.");
-    if (!isPmtct && !facility) throw new Error("Please select a facility.");
+    if (!isPmtct && !context?.facility_name) throw new Error("Please select a facility.");
 
     const formData = new FormData();
-    formData.append("facility_name", isPmtct ? "Community PMTCT Cascade" : facility);
-    formData.append("lga", lga);
-    formData.append("state", stateValue);
-    formData.append("report_year", year);
-    formData.append("source_month_sheet", month);
-    formData.append("target_tab", month);
-    formData.append("report_type", reportType);
-    formData.append(
-      "spreadsheet_name",
-      isPmtct ? "Community PMTCT reporting template" : `${stateValue} PPM Indicator reporting template`
-    );
+    formData.append("facility_name", context.facility_name);
+    formData.append("lga", context.lga);
+    formData.append("state", context.state);
+    formData.append("report_year", context.report_year);
+    formData.append("source_month_sheet", context.source_month_sheet);
+    formData.append("target_tab", context.target_tab);
+    formData.append("report_type", context.report_type);
+    formData.append("spreadsheet_name", context.spreadsheet_name);
     formData.append(
       "warning_acknowledged",
       validationData?.warning_confirmed ? "true" : "false"
@@ -225,11 +261,11 @@ export default function App() {
     return `Request failed with status ${status}`;
   };
 
-  const postToBackend = async (endpoint) => {
+  const postToBackend = async (endpoint, requestContext) => {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       method: "POST",
       headers: getAuthHeaders(),
-      body: buildFormData(),
+      body: buildFormData(requestContext),
     });
 
     let data = {};
@@ -274,18 +310,16 @@ export default function App() {
   const handleFileChange = (event) => {
     const selectedFile = event.target.files?.[0] || null;
     setFile(selectedFile);
-    setPreviewData(null);
-    setValidationData(null);
-    setUploadData(null);
-    resetFeedback();
+    clearWorkflowState();
   };
 
   const handlePreview = async () => {
     try {
       resetFeedback();
       setLoadingAction("preview");
-      const data = await postToBackend("/api/preview");
-      setPreviewData(data);
+      const requestContext = getCurrentRequestContext();
+      const data = await postToBackend("/api/preview", requestContext);
+      setPreviewData({ ...data, _requestContext: requestContext });
 
       const previewWarnings = data?.detailed_age_validation?.warnings || [];
 
@@ -316,7 +350,16 @@ export default function App() {
     try {
       resetFeedback();
       setLoadingAction("validate");
-      const data = await postToBackend("/api/validate");
+
+      const requestContext = getCurrentRequestContext();
+
+      if (previewData?._requestContext && !contextsMatch(previewData._requestContext, requestContext)) {
+        throw new Error(
+          "The selected State/LGA/Facility/Month/File changed after Preview. Please run Preview Mapping again before validation."
+        );
+      }
+
+      const data = await postToBackend("/api/validate", requestContext);
 
       if (data.status === "warning" && Array.isArray(data.warnings) && data.warnings.length > 0) {
         const warningText = data.warnings
@@ -335,6 +378,7 @@ export default function App() {
             ...data,
             status: "passed",
             warning_confirmed: true,
+            _requestContext: requestContext,
           });
           setSuccessMessage(
             "Validation completed. The Notified versus Diagnosed warning was reviewed and confirmed."
@@ -343,6 +387,7 @@ export default function App() {
           setValidationData({
             ...data,
             warning_confirmed: false,
+            _requestContext: requestContext,
           });
           setErrorMessage(
             "Validation paused. Please review the Notified and Diagnosed figures, then validate again."
@@ -351,7 +396,7 @@ export default function App() {
         return;
       }
 
-      setValidationData(data);
+      setValidationData({ ...data, _requestContext: requestContext });
 
       if (data.status === "failed") {
         const issueText = Array.isArray(data.issues) ? data.issues.join("\n") : "";
@@ -372,10 +417,16 @@ export default function App() {
         throw new Error("Please run validation successfully before upload.");
       }
 
+      const requestContext = getCurrentRequestContext();
+
+      if (!contextsMatch(validationData?._requestContext, requestContext)) {
+        throw new Error(
+          "The selected State/LGA/Facility/Month/File changed after validation. Please run Preview Mapping and Validate Totals again before upload."
+        );
+      }
+
       const confirmed = window.confirm(
-        `Proceed with upload?\n\nReport: ${reportType}\nLGA: ${lga}\nFacility/Workflow: ${
-          isPmtct ? "Community PMTCT Cascade" : facility
-        }\nMonth: ${month}\nYear: ${year}\nTarget tab: ${previewData?.target_tab || month}`
+        `Proceed with upload?\n\nReport: ${requestContext.report_type}\nState: ${requestContext.state}\nLGA: ${requestContext.lga}\nFacility/Workflow: ${requestContext.facility_name}\nMonth: ${requestContext.source_month_sheet}\nYear: ${requestContext.report_year}\nTarget tab: ${previewData?.target_tab || requestContext.target_tab}`
       );
 
       if (!confirmed) return;
@@ -383,7 +434,7 @@ export default function App() {
       resetFeedback();
       setLoadingAction("upload");
 
-      const data = await postToBackend("/api/upload");
+      const data = await postToBackend("/api/upload", requestContext);
       setUploadData(data);
       setSuccessMessage(data.message || "Upload successful.");
       fetchLogs();
@@ -498,7 +549,14 @@ export default function App() {
 
               <div className="mt-6 grid grid-cols-1 gap-5">
                 <Field label="Report Type">
-                  <select value={reportType} onChange={(e) => setReportType(e.target.value)} className={inputClass}>
+                  <select
+                    value={reportType}
+                    onChange={(e) => {
+                      setReportType(e.target.value);
+                      clearWorkflowState();
+                    }}
+                    className={inputClass}
+                  >
                     <option value={REPORT_TYPES.PPM}>PPM ETL Upload</option>
                     <option value={REPORT_TYPES.PMTCT}>Community PMTCT Upload</option>
                   </select>
@@ -510,6 +568,7 @@ export default function App() {
                     onChange={(e) => {
                       setStateValue(e.target.value);
                       setFacilitySearch("");
+                      clearWorkflowState();
                     }}
                     className={inputClass}
                   >
@@ -520,7 +579,15 @@ export default function App() {
                 </Field>
 
                 <Field label="LGA">
-                  <select value={lga} onChange={(e) => { setLga(e.target.value); setFacilitySearch(""); }} className={inputClass}>
+                  <select
+                    value={lga}
+                    onChange={(e) => {
+                      setLga(e.target.value);
+                      setFacilitySearch("");
+                      clearWorkflowState();
+                    }}
+                    className={inputClass}
+                  >
                     {lgaOptions.map((item) => (
                       <option key={item} value={item}>{item}</option>
                     ))}
@@ -540,7 +607,14 @@ export default function App() {
                     </Field>
 
                     <Field label="Facility">
-                      <select value={facility} onChange={(e) => setFacility(e.target.value)} className={inputClass}>
+                      <select
+                        value={facility}
+                        onChange={(e) => {
+                          setFacility(e.target.value);
+                          clearWorkflowState();
+                        }}
+                        className={inputClass}
+                      >
                         {filteredFacilities.map((item) => (
                           <option key={item} value={item}>{item}</option>
                         ))}
@@ -558,13 +632,27 @@ export default function App() {
 
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                   <Field label="Year">
-                    <select value={year} onChange={(e) => setYear(e.target.value)} className={inputClass}>
+                    <select
+                      value={year}
+                      onChange={(e) => {
+                        setYear(e.target.value);
+                        clearWorkflowState();
+                      }}
+                      className={inputClass}
+                    >
                       <option value="2026">2026</option>
                     </select>
                   </Field>
 
                   <Field label="Reporting Month">
-                    <select value={month} onChange={(e) => setMonth(e.target.value)} className={inputClass}>
+                    <select
+                      value={month}
+                      onChange={(e) => {
+                        setMonth(e.target.value);
+                        clearWorkflowState();
+                      }}
+                      className={inputClass}
+                    >
                       {MONTH_OPTIONS.map((item) => (
                         <option key={item} value={item}>{item}</option>
                       ))}
@@ -595,6 +683,15 @@ export default function App() {
                     {successMessage}
                   </div>
                 )}
+
+                {uploadData?.facility_name &&
+                  !isPmtct &&
+                  uploadData.facility_name !== facility && (
+                    <div className="rounded-[20px] border border-red-300 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+                      Safety check: backend returned facility "{uploadData.facility_name}" while the currently selected facility is "{facility}".
+                      Stop further uploads and re-run Preview and Validate.
+                    </div>
+                  )}
 
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                   <button type="button" onClick={handlePreview} disabled={loadingAction !== ""} className={secondaryButtonClass}>
