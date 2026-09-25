@@ -246,6 +246,17 @@ TARGET_MAP = {
 # DRTB regimen groups start after the treatment-started total block.
 # 23.1-23.9 are editable; 23.10 is the formula-derived total row in the source/master.
 DRTB_REGIMEN_START_COLS = ["RE", "RL", "RS", "RZ", "SG", "SN", "SU", "TB", "TI"]
+DRTB_REGIMEN_NAMES = [
+    "BPaLM",
+    "All Oral Shorter MDR-TB (Pregnant women)",
+    "Children 0-14 years - FQ susceptible/FQ resistant",
+    "Longer Oral MDR-TB Regimen",
+    "BPaL",
+    "Individualised Pre-XDR-TB Regimen",
+    "XDR-TB - resistance to Linezolid",
+    "XDR-TB - resistance to Bedaquiline",
+    "INH-resistant TB Regimen",
+]
 
 
 
@@ -1935,6 +1946,21 @@ def get_upload_logs(_: bool = Depends(require_auth)):
     return {"logs": [dict(row) for row in rows]}
 
 
+def drtb_regimen_preview_rows(source_blocks: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = []
+    for idx, (name, start_col, values) in enumerate(
+        zip(DRTB_REGIMEN_NAMES, DRTB_REGIMEN_START_COLS, source_blocks["drtb_regimens"]), start=1
+    ):
+        vals = [clean_number(v) for v in values]
+        rows.append({
+            "indicator": f"23.{idx}", "regimen": name, "target_start_col": start_col,
+            "male_0_4": vals[0], "male_5_14": vals[1], "male_15_plus": vals[2],
+            "female_0_4": vals[3], "female_5_14": vals[4], "female_15_plus": vals[5],
+            "total": sum(vals),
+        })
+    return rows
+
+
 @app.post("/api/preview")
 async def preview(
     facility_name: str = Form(...),
@@ -2036,6 +2062,16 @@ async def preview(
         new_indicators_preview["drtb_notified_total"] = sum(new_indicators_preview["drtb_notified"].values())
         new_indicators_preview["drtb_started_total"] = sum(new_indicators_preview["drtb_started"].values())
         new_indicators_preview["drtb_regimen_total"] = sum(new_indicators_preview["drtb_regimens"].values())
+        new_indicators_preview["drtb_regimen_rows"] = drtb_regimen_preview_rows(source_blocks)
+
+        # 23.10 is the ETL total across 23.1-23.9; use it as a check only.
+        regimen_23_10 = extract_grouped(source_df, 399, 400)
+        regimen_sum_grouped = [sum(block[i] for block in source_blocks["drtb_regimens"]) for i in range(6)]
+        new_indicators_preview["drtb_regimen_23_10_check"] = {
+            "source_23_10": regimen_23_10,
+            "sum_23_1_to_23_9": regimen_sum_grouped,
+            "matches": all(abs(a - c) < 1e-9 for a, c in zip(regimen_23_10, regimen_sum_grouped)),
+        }
 
         contact_blocks = build_dstb_contact_blocks(source_df)
         def contact_four(values):
