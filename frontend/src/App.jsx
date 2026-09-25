@@ -724,7 +724,10 @@ export default function App() {
               <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <h3 className="text-3xl font-bold text-slate-900">Preview results</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-3xl font-bold text-slate-900">Preview results</h3>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">Preview v2</span>
+                    </div>
                     <p className="mt-1 text-sm text-slate-600">
                       Report: {reportType} · Target tab: {previewData.target_tab || "N/A"} · Row:{" "}
                       {previewData.matched_target_row ?? previewData.matched_rows ?? "Multiple"}
