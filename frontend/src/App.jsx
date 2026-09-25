@@ -756,6 +756,46 @@ export default function App() {
                     <InfoCard title="Prepared Updates" value={previewData.prepared_updates ?? 0} />
                   </div>
                 )}
+
+                {!isPmtct && previewData.contact_investigation && (
+                  <div className="mt-6 rounded-[24px] border border-blue-200 bg-blue-50 p-5">
+                    <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <h4 className="text-xl font-bold text-slate-900">DSTB Contact Investigation Preview</h4>
+                        <p className="mt-1 text-sm text-slate-600">
+                          Separate contact-investigation worksheet prepared from the same facility ETL.
+                        </p>
+                      </div>
+                      <span className="inline-flex w-fit rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700">
+                        Ready
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                      <InfoCard
+                        title="Target Tab"
+                        value={previewData.contact_investigation.target_tab || "N/A"}
+                      />
+                      <InfoCard
+                        title="Matched Row"
+                        value={previewData.contact_investigation.matched_target_row ?? "N/A"}
+                      />
+                      <InfoCard
+                        title="Prepared Write Ranges"
+                        value={Array.isArray(previewData.contact_investigation.updates)
+                          ? previewData.contact_investigation.updates.length
+                          : 0}
+                      />
+                    </div>
+
+                    {Array.isArray(previewData.contact_investigation.updates) &&
+                      previewData.contact_investigation.updates.length > 0 && (
+                        <div className="mt-4 rounded-[18px] border border-blue-100 bg-white px-4 py-3 text-sm text-slate-700">
+                          Contact Investigation mapping was found for this facility. Upload remains locked until the normal validation step passes.
+                        </div>
+                      )}
+                  </div>
+                )}
               </div>
             )}
 
