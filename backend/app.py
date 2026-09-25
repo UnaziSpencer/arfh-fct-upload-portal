@@ -212,7 +212,41 @@ TARGET_MAP = {
     },
     "cpt": ["KN", "KO", "KP", "KQ", "KR", "KS"],
     "art": ["KU", "KV", "KW", "KX", "KY", "KZ"],
+
+    # Section 16/17 additions. Total columns LH and LO are formula cells.
+    "currently_receiving_treatment": ["LB", "LC", "LD", "LE", "LF", "LG"],
+    "referred_public_other": ["LI", "LJ", "LK", "LL", "LM", "LN"],
+
+    # DRTB section 19-23. Provider blocks are six editable grouped cells;
+    # each seventh cell in the master is a formula total and is not written.
+    "drtb_presumptive": {
+        "facility":  ["MB", "MC", "MD", "ME", "MF", "MG"],
+        "pmv":       ["MI", "MJ", "MK", "ML", "MM", "MN"],
+        "community": ["MP", "MQ", "MR", "MS", "MT", "MU"],
+        "lab":       ["MW", "MX", "MY", "MZ", "NA", "NB"],
+        "tba":       ["ND", "NE", "NF", "NG", "NH", "NI"],
+    },
+    "drtb_evaluated_xpert": ["NR", "NS", "NT", "NU", "NV", "NW"],
+    "drtb_notified": {
+        "facility":  ["NY", "NZ", "OA", "OB", "OC", "OD"],
+        "pmv":       ["OF", "OG", "OH", "OI", "OJ", "OK"],
+        "community": ["OM", "ON", "OO", "OP", "OQ", "OR"],
+        "lab":       ["OT", "OU", "OV", "OW", "OX", "OY"],
+        "tba":       ["PA", "PB", "PC", "PD", "PE", "PF"],
+    },
+    "drtb_started": {
+        "facility":  ["PO", "PP", "PQ", "PR", "PS", "PT"],
+        "pmv":       ["PV", "PW", "PX", "PY", "PZ", "QA"],
+        "community": ["QC", "QD", "QE", "QF", "QG", "QH"],
+        "lab":       ["QJ", "QK", "QL", "QM", "QN", "QO"],
+        "tba":       ["QQ", "QR", "QS", "QT", "QU", "QV"],
+    },
 }
+
+# DRTB regimen groups start after the treatment-started total block.
+# 23.1-23.9 are editable; 23.10 is the formula-derived total row in the source/master.
+DRTB_REGIMEN_START_COLS = ["RE", "RL", "RS", "RZ", "SG", "SN", "SU", "TB", "TI"]
+
 
 
 def get_target_tab_from_month(report_month: str) -> str:
@@ -696,6 +730,37 @@ def build_source_blocks(df: pd.DataFrame) -> Dict[str, Any]:
         },
         "cpt": extract_grouped(df, 290, 291),
         "art": extract_grouped(df, 294, 295),
+        "currently_receiving_treatment": extract_grouped(df, 298, 299),
+        "referred_public_other": extract_grouped(df, 302, 303),
+        "drtb_presumptive": {
+            "facility": extract_grouped(df, 311, 312),
+            "pmv": extract_grouped(df, 314, 315),
+            "community": extract_grouped(df, 317, 318),
+            "lab": extract_grouped(df, 320, 321),
+            "tba": extract_grouped(df, 323, 324),
+        },
+        "drtb_evaluated_xpert": extract_grouped(df, 330, 331),
+        "drtb_notified": {
+            "facility": extract_grouped(df, 334, 335),
+            "pmv": extract_grouped(df, 337, 338),
+            "community": extract_grouped(df, 340, 341),
+            "lab": extract_grouped(df, 343, 344),
+            "tba": extract_grouped(df, 346, 347),
+        },
+        "drtb_started": {
+            "facility": extract_grouped(df, 353, 354),
+            "pmv": extract_grouped(df, 356, 357),
+            "community": extract_grouped(df, 359, 360),
+            "lab": extract_grouped(df, 362, 363),
+            "tba": extract_grouped(df, 365, 366),
+        },
+        "drtb_regimens": [
+            extract_grouped(df, 372, 373), extract_grouped(df, 375, 376),
+            extract_grouped(df, 378, 379), extract_grouped(df, 381, 382),
+            extract_grouped(df, 384, 385), extract_grouped(df, 387, 388),
+            extract_grouped(df, 390, 391), extract_grouped(df, 393, 394),
+            extract_grouped(df, 396, 397),
+        ],
     }
 
 
@@ -1111,8 +1176,135 @@ def build_preview_payload_for_row(source_blocks: Dict[str, Any], matched_row: in
         for col, val in zip(TARGET_MAP["art"], source_blocks["art"])
     }
 
+    for section_name in ["currently_receiving_treatment", "referred_public_other", "drtb_evaluated_xpert"]:
+        preview[section_name] = {
+            f"{col}{matched_row}": val
+            for col, val in zip(TARGET_MAP[section_name], source_blocks[section_name])
+        }
+
+    for section_name in ["drtb_presumptive", "drtb_notified", "drtb_started"]:
+        preview[section_name] = {}
+        for provider, values in source_blocks[section_name].items():
+            preview[section_name][provider] = {
+                f"{col}{matched_row}": val
+                for col, val in zip(TARGET_MAP[section_name][provider], values)
+            }
+
+    preview["drtb_regimens"] = {}
+    for idx, (start_col, values) in enumerate(zip(DRTB_REGIMEN_START_COLS, source_blocks["drtb_regimens"]), start=1):
+        start_num = column_letter_to_number(start_col)
+        cols = [column_number_to_letter(start_num + offset) for offset in range(6)]
+        preview["drtb_regimens"][f"23.{idx}"] = {
+            f"{col}{matched_row}": val for col, val in zip(cols, values)
+        }
+
     return preview
 
+
+DSTB_CONTACT_TAB_BY_MONTH = {
+    "July": "DSTB_CTracing_Jul", "Jul": "DSTB_CTracing_Jul",
+    "August": "DSTB_CTracing_Aug", "Aug": "DSTB_CTracing_Aug",
+    "September": "DSTB_CTracing_Sep", "Sep": "DSTB_CTracing_Sep",
+}
+
+def extract_u5_ge5(df: pd.DataFrame, male_row: int, female_row: int) -> List[float]:
+    male_u5 = clean_number(df.iloc[male_row, 3]) + clean_number(df.iloc[male_row, 4])
+    male_ge5 = sum(clean_number(df.iloc[male_row, c]) for c in range(5, 18))
+    female_u5 = clean_number(df.iloc[female_row, 3]) + clean_number(df.iloc[female_row, 4])
+    female_ge5 = sum(clean_number(df.iloc[female_row, c]) for c in range(5, 18))
+    return [male_u5, male_ge5, female_u5, female_ge5]
+
+def extract_u5_sex(df: pd.DataFrame, male_row: int, female_row: int) -> List[float]:
+    return [
+        clean_number(df.iloc[male_row, 3]) + clean_number(df.iloc[male_row, 4]),
+        clean_number(df.iloc[female_row, 3]) + clean_number(df.iloc[female_row, 4]),
+    ]
+
+def extract_ge5_sex(df: pd.DataFrame, male_row: int, female_row: int) -> List[float]:
+    return [
+        sum(clean_number(df.iloc[male_row, c]) for c in range(5, 18)),
+        sum(clean_number(df.iloc[female_row, c]) for c in range(5, 18)),
+    ]
+
+def build_dstb_contact_blocks(df: pd.DataFrame) -> Dict[str, Any]:
+    return {
+        "index_cases": extract_u5_ge5(df, 409, 410),
+        "bact_index_cases": extract_u5_ge5(df, 413, 414),
+        "bact_index_traced": extract_u5_ge5(df, 417, 418),
+        "contacts_identified": extract_u5_ge5(df, 425, 426),
+        "contacts_screened": extract_u5_ge5(df, 429, 430),
+        "presumptive_contacts": extract_u5_ge5(df, 437, 438),
+        "evaluated_contacts": extract_u5_ge5(df, 441, 442),
+        "diagnosed_contacts": extract_u5_ge5(df, 445, 446),
+        "treated_contacts": extract_u5_ge5(df, 449, 450),
+        "tpt_eligible_u5": extract_u5_sex(df, 453, 454),
+        "tpt_eligible_ge5": extract_ge5_sex(df, 453, 454),
+        "tpt_regimens_u5": [
+            extract_u5_sex(df, 457, 458), extract_u5_sex(df, 460, 461),
+            extract_u5_sex(df, 463, 464), extract_u5_sex(df, 466, 467),
+        ],
+        "tpt_regimens_ge5": [
+            extract_ge5_sex(df, 457, 458), extract_ge5_sex(df, 460, 461),
+            extract_ge5_sex(df, 463, 464), extract_ge5_sex(df, 466, 467),
+        ],
+    }
+
+def _contact_input_update(start_col: str, row: int, values: List[Any]) -> Dict[str, Any]:
+    # Contact-tracing blocks have formula total cells after each input group.
+    return make_row_range_update(start_col, row, values)
+
+def build_dstb_contact_updates(df: pd.DataFrame, row: int) -> List[Dict[str, Any]]:
+    b = build_dstb_contact_blocks(df)
+    updates = []
+    # Four input cells: Male U-5, Male >=5, Female U-5, Female >=5. Total is formula.
+    for start_col, key in [
+        ("I", "index_cases"), ("N", "bact_index_cases"), ("S", "bact_index_traced"),
+        ("Y", "contacts_identified"), ("AD", "contacts_screened"),
+        ("AJ", "presumptive_contacts"), ("AO", "evaluated_contacts"),
+        ("AT", "diagnosed_contacts"), ("AY", "treated_contacts"),
+    ]:
+        updates.append(_contact_input_update(start_col, row, b[key]))
+
+    # TPT eligibility and initiation. Totals/proportions are formula cells and remain untouched.
+    updates.append(_contact_input_update("BD", row, b["tpt_eligible_u5"]))
+    for start_col, vals in zip(["BG", "BJ", "BM", "BP"], b["tpt_regimens_u5"]):
+        updates.append(_contact_input_update(start_col, row, vals))
+    updates.append(_contact_input_update("BU", row, b["tpt_eligible_ge5"]))
+    for start_col, vals in zip(["BX", "CA", "CD", "CG"], b["tpt_regimens_ge5"]):
+        updates.append(_contact_input_update(start_col, row, vals))
+    return updates
+
+def validate_drtb_and_contact(df: pd.DataFrame) -> List[str]:
+    issues = []
+    blocks = build_source_blocks(df)
+    drtb_pres = sum(sum(v) for v in blocks["drtb_presumptive"].values())
+    drtb_eval = sum(blocks["drtb_evaluated_xpert"])
+    drtb_notified = sum(sum(v) for v in blocks["drtb_notified"].values())
+    drtb_started = sum(sum(v) for v in blocks["drtb_started"].values())
+    regimen_total = sum(sum(v) for v in blocks["drtb_regimens"])
+    if drtb_eval > drtb_pres: issues.append(f"DRTB evaluated by Xpert ({drtb_eval}) cannot exceed DRTB presumptive ({drtb_pres}).")
+    if drtb_notified > drtb_eval: issues.append(f"RR/MDR-TB notified ({drtb_notified}) cannot exceed DRTB evaluated by Xpert ({drtb_eval}).")
+    if drtb_started > drtb_notified: issues.append(f"RR/MDR-TB started on treatment ({drtb_started}) cannot exceed RR/MDR-TB notified ({drtb_notified}).")
+    if regimen_total > drtb_started: issues.append(f"Sum of DRTB regimen categories ({regimen_total}) cannot exceed RR/MDR-TB started on treatment ({drtb_started}).")
+
+    c = build_dstb_contact_blocks(df)
+    def total(key): return sum(c[key])
+    if total("bact_index_traced") > total("bact_index_cases"): issues.append("Bacteriological index cases traced cannot exceed bacteriological index cases diagnosed.")
+    if total("contacts_screened") > total("contacts_identified"): issues.append("Contacts screened cannot exceed contacts identified.")
+    if total("presumptive_contacts") > total("contacts_screened"): issues.append("Presumptive contacts cannot exceed contacts screened.")
+    if total("evaluated_contacts") > total("presumptive_contacts"): issues.append("Evaluated presumptive contacts cannot exceed presumptive contacts identified.")
+    if total("diagnosed_contacts") > total("evaluated_contacts"): issues.append("Diagnosed TB among contacts cannot exceed evaluated presumptive contacts.")
+    if total("treated_contacts") > total("diagnosed_contacts"): issues.append("Contacts started on TB treatment cannot exceed diagnosed TB contacts.")
+    return issues
+
+def open_dstb_contact_sheet(workbook, report_month: str):
+    tab = DSTB_CONTACT_TAB_BY_MONTH.get(str(report_month).strip())
+    if not tab:
+        raise HTTPException(status_code=400, detail=f"DSTB contact investigation is configured for Q3 months only: {report_month}")
+    try:
+        return workbook.worksheet(tab), tab
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Contact investigation worksheet/tab '{tab}' not found. {str(exc)}")
 
 def column_letter_to_number(col: str) -> int:
     number = 0
@@ -1793,7 +1985,7 @@ async def preview(
                 "summary": summary,
             }
 
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+        workbook, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             state=state,
             report_year=report_year,
             report_month=source_month_sheet,
@@ -1812,6 +2004,9 @@ async def preview(
         detailed_age_validation = enforce_detailed_age_validation(source_df)
         source_blocks = build_source_blocks(source_df)
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
+        contact_ws, contact_tab = open_dstb_contact_sheet(workbook, source_month_sheet)
+        contact_row = find_facility_row(contact_ws, facility_name)
+        contact_updates = build_dstb_contact_updates(source_df, contact_row) if contact_row else []
         summary = validation_summary_from_source_blocks(source_blocks)
 
         return {
@@ -1827,6 +2022,11 @@ async def preview(
             "uploaded_filename": file.filename,
             "matched_target_row": matched_row,
             "writes": preview_payload,
+            "contact_investigation": {
+                "target_tab": contact_tab,
+                "matched_target_row": contact_row,
+                "updates": contact_updates,
+            },
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
@@ -1895,7 +2095,7 @@ async def validate(
                 "summary": summary,
             }
 
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+        workbook, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             state=state,
             report_year=report_year,
             report_month=source_month_sheet,
@@ -1916,6 +2116,7 @@ async def validate(
         summary = validation_summary_from_source_blocks(source_blocks)
 
         issues = [item["message"] for item in detailed_age_validation["issues"]]
+        issues.extend(validate_drtb_and_contact(source_df))
         if summary["attendance_total"] <= 0:
             issues.append("Attendance total is zero or invalid.")
         if summary["screened_total"] <= 0:
@@ -2040,7 +2241,7 @@ async def upload(
                 "summary": summary,
             }
 
-        _, worksheet, workbook_id, actual_target_tab = open_master_sheet(
+        workbook, worksheet, workbook_id, actual_target_tab = open_master_sheet(
             state=state,
             report_year=report_year,
             report_month=source_month_sheet,
@@ -2057,6 +2258,9 @@ async def upload(
 
         source_df = load_source_df(temp_path, source_month_sheet)
         detailed_age_validation = enforce_detailed_age_validation(source_df)
+        extra_issues = validate_drtb_and_contact(source_df)
+        if extra_issues:
+            raise HTTPException(status_code=422, detail={"message": "DRTB/Contact Investigation validation failed.", "issues": extra_issues})
 
         if detailed_age_validation.get("warnings") and not warning_acknowledged:
             raise HTTPException(
@@ -2078,6 +2282,15 @@ async def upload(
         updates = flatten_preview_to_updates(preview_payload)
 
         successful_updates, failed_updates = safe_apply_updates(worksheet, updates)
+
+        contact_ws, contact_tab = open_dstb_contact_sheet(workbook, source_month_sheet)
+        contact_row = find_facility_row(contact_ws, facility_name)
+        if not contact_row:
+            raise HTTPException(status_code=404, detail=f"Facility '{facility_name}' was not found in contact investigation tab '{contact_tab}'.")
+        contact_updates = build_dstb_contact_updates(source_df, contact_row)
+        contact_successful, contact_failed = safe_apply_updates(contact_ws, contact_updates)
+        successful_updates += contact_successful
+        failed_updates.extend(contact_failed)
         summary = validation_summary_from_source_blocks(source_blocks)
 
         status = "uploaded" if successful_updates > 0 else "failed"
