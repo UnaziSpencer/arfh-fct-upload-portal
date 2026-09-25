@@ -833,14 +833,17 @@ export default function App() {
                               let v = values[key] || {};
 
                               if (key === "__total_tpt_eligible") {
-                                const u5 = values.tpt_eligible_u5 || {};
-                                const ge5 = values.tpt_eligible_ge5 || {};
+                                // Display-only preview: a presumptive contact is not removed from
+                                // TPT eligibility merely for being presumptive. Only contacts
+                                // diagnosed with active TB are excluded here.
+                                const screened = values.contacts_screened || {};
+                                const diagnosed = values.diagnosed_contacts || {};
                                 v = {
-                                  male_u5: u5.male ?? 0,
-                                  male_5_plus: ge5.male ?? 0,
-                                  female_u5: u5.female ?? 0,
-                                  female_5_plus: ge5.female ?? 0,
-                                  total: (Number(u5.total) || 0) + (Number(ge5.total) || 0),
+                                  male_u5: Math.max(0, (Number(screened.male_u5) || 0) - (Number(diagnosed.male_u5) || 0)),
+                                  male_5_plus: Math.max(0, (Number(screened.male_5_plus) || 0) - (Number(diagnosed.male_5_plus) || 0)),
+                                  female_u5: Math.max(0, (Number(screened.female_u5) || 0) - (Number(diagnosed.female_u5) || 0)),
+                                  female_5_plus: Math.max(0, (Number(screened.female_5_plus) || 0) - (Number(diagnosed.female_5_plus) || 0)),
+                                  total: Math.max(0, (Number(screened.total) || 0) - (Number(diagnosed.total) || 0)),
                                 };
                               }
 
