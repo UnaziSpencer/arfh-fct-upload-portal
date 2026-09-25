@@ -2373,7 +2373,32 @@ async def upload(
         preview_payload = build_preview_payload_for_row(source_blocks, matched_row)
         updates = flatten_preview_to_updates(preview_payload)
 
+        # Explicitly rebuild Indicator 23.1-23.9 write cells from the verified
+        # grouped source values. This guarantees that the regimen block sent to
+        # Google Sheets is RE:RJ, RL:RQ, RS:RX, ... with the 7th Total column
+        # left untouched for the master-sheet formula.
+        regimen_updates = []
+        for start_col, values in zip(DRTB_REGIMEN_START_COLS, source_blocks["drtb_regimens"]):
+            start_num = column_letter_to_number(start_col)
+            for offset, value in enumerate(values):
+                col = column_number_to_letter(start_num + offset)
+                regimen_updates.append({
+                    "range": f"{col}{matched_row}",
+                    "values": [[clean_number(value)]],
+                })
+
+        # Remove any regimen cells produced by the generic flattener, then append
+        # the explicit verified cells once. This avoids duplicate/ambiguous writes.
+        regimen_ranges = {item["range"] for item in regimen_updates}
+        updates = [item for item in updates if item.get("range") not in regimen_ranges]
+        updates.extend(regimen_updates)
+
         successful_updates, failed_updates = safe_apply_updates(worksheet, updates)
+
+        # Read back the six BPaLM input cells so the upload response proves what
+        # actually reached Google Sheets. Total RK is formula-driven and is not overwritten.
+        bpalm_written = worksheet.get(f"RE{matched_row}:RJ{matched_row}")
+        bpalm_expected = [clean_number(v) for v in source_blocks["drtb_regimens"][0]]
 
         contact_ws, contact_tab = open_dstb_contact_sheet(workbook, source_month_sheet)
         contact_row = find_facility_row(contact_ws, facility_name)
@@ -2416,6 +2441,11 @@ async def upload(
             "matched_target_row": matched_row,
             "updated_cells": successful_updates,
             "skipped_cells": failed_updates,
+            "drtb_regimen_write_check": {
+                "bpalm_range": f"RE{matched_row}:RJ{matched_row}",
+                "expected": bpalm_expected,
+                "read_back": bpalm_written[0] if bpalm_written else [],
+            },
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
