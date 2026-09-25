@@ -757,43 +757,110 @@ export default function App() {
                   </div>
                 )}
 
+                {!isPmtct && previewData.new_indicators_preview && (
+                  <div className="mt-6 rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                    <h4 className="text-xl font-bold text-slate-900">New DSTB / DRTB Indicators</h4>
+                    <p className="mt-1 text-sm text-slate-600">Values extracted from the uploaded ETL before upload.</p>
+
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                      <PreviewValue label="Currently receiving treatment" value={previewData.new_indicators_preview.currently_receiving_treatment} />
+                      <PreviewValue label="Referred to public/other facilities" value={previewData.new_indicators_preview.referred_public_other} />
+                      <PreviewValue label="DRTB presumptive – Total" value={previewData.new_indicators_preview.drtb_presumptive_total} />
+                      <PreviewValue label="DRTB evaluated by Xpert" value={previewData.new_indicators_preview.drtb_evaluated_xpert} />
+                      <PreviewValue label="RR/MDR-TB notified – Total" value={previewData.new_indicators_preview.drtb_notified_total} />
+                      <PreviewValue label="RR/MDR-TB started treatment – Total" value={previewData.new_indicators_preview.drtb_started_total} />
+                    </div>
+
+                    <CompactValues
+                      title="DRTB presumptive by referral source"
+                      values={previewData.new_indicators_preview.drtb_presumptive}
+                    />
+                    <CompactValues
+                      title="RR/MDR-TB notified by referral source"
+                      values={previewData.new_indicators_preview.drtb_notified}
+                    />
+                    <CompactValues
+                      title="RR/MDR-TB started treatment by referral source"
+                      values={previewData.new_indicators_preview.drtb_started}
+                    />
+                    <CompactValues
+                      title="DRTB regimen (23.1–23.9)"
+                      values={previewData.new_indicators_preview.drtb_regimens}
+                    />
+                  </div>
+                )}
+
                 {!isPmtct && previewData.contact_investigation && (
                   <div className="mt-6 rounded-[24px] border border-blue-200 bg-blue-50 p-5">
-                    <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                       <div>
-                        <h4 className="text-xl font-bold text-slate-900">DSTB Contact Investigation Preview</h4>
+                        <h4 className="text-xl font-bold text-slate-900">DSTB Contact Investigation</h4>
                         <p className="mt-1 text-sm text-slate-600">
-                          Separate contact-investigation worksheet prepared from the same facility ETL.
+                          {previewData.contact_investigation.target_tab || "N/A"} · Row {previewData.contact_investigation.matched_target_row ?? "N/A"}
                         </p>
                       </div>
-                      <span className="inline-flex w-fit rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700">
-                        Ready
-                      </span>
+                      <span className="inline-flex w-fit rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700">Ready</span>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                      <InfoCard
-                        title="Target Tab"
-                        value={previewData.contact_investigation.target_tab || "N/A"}
-                      />
-                      <InfoCard
-                        title="Matched Row"
-                        value={previewData.contact_investigation.matched_target_row ?? "N/A"}
-                      />
-                      <InfoCard
-                        title="Prepared Write Ranges"
-                        value={Array.isArray(previewData.contact_investigation.updates)
-                          ? previewData.contact_investigation.updates.length
-                          : 0}
-                      />
-                    </div>
+                    {previewData.contact_investigation.values && (
+                      <div className="mt-4 overflow-x-auto rounded-[18px] border border-blue-100 bg-white">
+                        <table className="min-w-full text-left text-sm">
+                          <thead className="bg-slate-50 text-slate-500">
+                            <tr>
+                              <th className="px-4 py-3">Indicator</th>
+                              <th className="px-3 py-3">Male U-5</th>
+                              <th className="px-3 py-3">Male 5+</th>
+                              <th className="px-3 py-3">Female U-5</th>
+                              <th className="px-3 py-3">Female 5+</th>
+                              <th className="px-3 py-3 font-semibold">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[
+                              ["Index TB cases", "index_cases"],
+                              ["Bacteriological index cases", "bact_index_cases"],
+                              ["Bacteriological index cases traced", "bact_index_traced"],
+                              ["Contacts identified", "contacts_identified"],
+                              ["Contacts screened", "contacts_screened"],
+                              ["Presumptive contacts", "presumptive_contacts"],
+                              ["Presumptive contacts evaluated", "evaluated_contacts"],
+                              ["Contacts diagnosed with TB", "diagnosed_contacts"],
+                              ["Diagnosed contacts started treatment", "treated_contacts"],
+                            ].map(([label, key]) => {
+                              const v = previewData.contact_investigation.values[key] || {};
+                              return (
+                                <tr key={key} className="border-t border-slate-100">
+                                  <td className="px-4 py-2.5 font-medium text-slate-700">{label}</td>
+                                  <td className="px-3 py-2.5">{v.male_u5 ?? 0}</td>
+                                  <td className="px-3 py-2.5">{v.male_5_plus ?? 0}</td>
+                                  <td className="px-3 py-2.5">{v.female_u5 ?? 0}</td>
+                                  <td className="px-3 py-2.5">{v.female_5_plus ?? 0}</td>
+                                  <td className="px-3 py-2.5 font-bold">{v.total ?? 0}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
 
-                    {Array.isArray(previewData.contact_investigation.updates) &&
-                      previewData.contact_investigation.updates.length > 0 && (
-                        <div className="mt-4 rounded-[18px] border border-blue-100 bg-white px-4 py-3 text-sm text-slate-700">
-                          Contact Investigation mapping was found for this facility. Upload remains locked until the normal validation step passes.
+                    {previewData.contact_investigation.values && (
+                      <div className="mt-4">
+                        <h5 className="mb-2 font-semibold text-slate-800">TPT eligibility / initiation</h5>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                          {[
+                            ["Eligible U-5", "tpt_eligible_u5"], ["Eligible 5+", "tpt_eligible_ge5"],
+                            ["1HP U-5", "tpt_1hp_u5"], ["1HP 5+", "tpt_1hp_ge5"],
+                            ["3HP U-5", "tpt_3hp_u5"], ["3HP 5+", "tpt_3hp_ge5"],
+                            ["3HR U-5", "tpt_3hr_u5"], ["3HR 5+", "tpt_3hr_ge5"],
+                            ["6H U-5", "tpt_6h_u5"], ["6H 5+", "tpt_6h_ge5"],
+                          ].map(([label, key]) => {
+                            const v = previewData.contact_investigation.values[key] || {};
+                            return <PreviewValue key={key} label={label} value={`M ${v.male ?? 0} · F ${v.female ?? 0} · Total ${v.total ?? 0}`} />;
+                          })}
                         </div>
-                      )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -893,6 +960,31 @@ function InfoCard({ title, value }) {
     <div className="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
       <p className="text-xs uppercase tracking-wide text-slate-500">{title}</p>
       <p className="mt-2 text-2xl font-bold text-slate-900">{String(value)}</p>
+    </div>
+  );
+}
+
+function PreviewValue({ label, value }) {
+  return (
+    <div className="rounded-[18px] border border-slate-200 bg-white px-4 py-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-xl font-bold text-slate-900">{value ?? 0}</p>
+    </div>
+  );
+}
+
+function CompactValues({ title, values }) {
+  if (!values) return null;
+  return (
+    <div className="mt-4 rounded-[18px] border border-slate-200 bg-white px-4 py-3">
+      <p className="mb-2 text-sm font-semibold text-slate-700">{title}</p>
+      <div className="flex flex-wrap gap-2">
+        {Object.entries(values).map(([key, value]) => (
+          <span key={key} className="rounded-xl bg-slate-100 px-3 py-1.5 text-sm text-slate-700">
+            {formatSummaryTitle(key)}: <strong>{value ?? 0}</strong>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

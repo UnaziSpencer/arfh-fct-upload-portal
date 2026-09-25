@@ -2009,6 +2009,60 @@ async def preview(
         contact_updates = build_dstb_contact_updates(source_df, contact_row) if contact_row else []
         summary = validation_summary_from_source_blocks(source_blocks)
 
+        # Human-readable preview values for the newly added monthly indicators.
+        # These are display-only and do not change the write payload.
+        new_indicators_preview = {
+            "currently_receiving_treatment": grouped_sum(source_blocks["currently_receiving_treatment"]),
+            "referred_public_other": grouped_sum(source_blocks["referred_public_other"]),
+            "drtb_presumptive": {
+                provider: grouped_sum(values)
+                for provider, values in source_blocks["drtb_presumptive"].items()
+            },
+            "drtb_evaluated_xpert": grouped_sum(source_blocks["drtb_evaluated_xpert"]),
+            "drtb_notified": {
+                provider: grouped_sum(values)
+                for provider, values in source_blocks["drtb_notified"].items()
+            },
+            "drtb_started": {
+                provider: grouped_sum(values)
+                for provider, values in source_blocks["drtb_started"].items()
+            },
+            "drtb_regimens": {
+                f"23.{idx}": grouped_sum(values)
+                for idx, values in enumerate(source_blocks["drtb_regimens"], start=1)
+            },
+        }
+        new_indicators_preview["drtb_presumptive_total"] = sum(new_indicators_preview["drtb_presumptive"].values())
+        new_indicators_preview["drtb_notified_total"] = sum(new_indicators_preview["drtb_notified"].values())
+        new_indicators_preview["drtb_started_total"] = sum(new_indicators_preview["drtb_started"].values())
+        new_indicators_preview["drtb_regimen_total"] = sum(new_indicators_preview["drtb_regimens"].values())
+
+        contact_blocks = build_dstb_contact_blocks(source_df)
+        def contact_four(values):
+            return {
+                "male_u5": values[0],
+                "male_5_plus": values[1],
+                "female_u5": values[2],
+                "female_5_plus": values[3],
+                "total": sum(values),
+            }
+        def contact_two(values):
+            return {"male": values[0], "female": values[1], "total": sum(values)}
+
+        contact_preview_values = {
+            key: contact_four(contact_blocks[key])
+            for key in [
+                "index_cases", "bact_index_cases", "bact_index_traced",
+                "contacts_identified", "contacts_screened", "presumptive_contacts",
+                "evaluated_contacts", "diagnosed_contacts", "treated_contacts",
+            ]
+        }
+        contact_preview_values["tpt_eligible_u5"] = contact_two(contact_blocks["tpt_eligible_u5"])
+        contact_preview_values["tpt_eligible_ge5"] = contact_two(contact_blocks["tpt_eligible_ge5"])
+        for idx, regimen in enumerate(["1HP", "3HP", "3HR", "6H"]):
+            contact_preview_values[f"tpt_{regimen.lower()}_u5"] = contact_two(contact_blocks["tpt_regimens_u5"][idx])
+            contact_preview_values[f"tpt_{regimen.lower()}_ge5"] = contact_two(contact_blocks["tpt_regimens_ge5"][idx])
+
         return {
             "message": "Preview loaded successfully.",
             "facility_name": facility_name,
@@ -2022,10 +2076,12 @@ async def preview(
             "uploaded_filename": file.filename,
             "matched_target_row": matched_row,
             "writes": preview_payload,
+            "new_indicators_preview": new_indicators_preview,
             "contact_investigation": {
                 "target_tab": contact_tab,
                 "matched_target_row": contact_row,
                 "updates": contact_updates,
+                "values": contact_preview_values,
             },
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
