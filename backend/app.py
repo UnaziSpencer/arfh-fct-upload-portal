@@ -2377,28 +2377,55 @@ async def upload(
         # grouped source values. This guarantees that the regimen block sent to
         # Google Sheets is RE:RJ, RL:RQ, RS:RX, ... with the 7th Total column
         # left untouched for the master-sheet formula.
+        # Write the COMPLETE 23.1-23.9 regimen matrix as nine contiguous
+        # six-cell ranges. Zeros are written explicitly; they are NOT skipped.
+        # The 7th cell in each regimen block is the formula Total and remains untouched.
         regimen_updates = []
+        regimen_input_ranges = set()
         for start_col, values in zip(DRTB_REGIMEN_START_COLS, source_blocks["drtb_regimens"]):
+            clean_values = [clean_number(v) for v in values]
             start_num = column_letter_to_number(start_col)
-            for offset, value in enumerate(values):
-                col = column_number_to_letter(start_num + offset)
-                regimen_updates.append({
-                    "range": f"{col}{matched_row}",
-                    "values": [[clean_number(value)]],
-                })
+            end_col = column_number_to_letter(start_num + 5)
+            regimen_updates.append({
+                "range": f"{start_col}{matched_row}:{end_col}{matched_row}",
+                "values": [clean_values],
+            })
+            # Track every individual input cell so generic regimen writes can be removed.
+            for offset in range(6):
+                regimen_input_ranges.add(f"{column_number_to_letter(start_num + offset)}{matched_row}")
 
-        # Remove any regimen cells produced by the generic flattener, then append
-        # the explicit verified cells once. This avoids duplicate/ambiguous writes.
-        regimen_ranges = {item["range"] for item in regimen_updates}
-        updates = [item for item in updates if item.get("range") not in regimen_ranges]
-        updates.extend(regimen_updates)
+        # Remove ALL generic regimen writes, including compact ranges such as RE:RJ,
+        # then append the verified full-matrix ranges exactly once.
+        regimen_start_nums = {column_letter_to_number(c) for c in DRTB_REGIMEN_START_COLS}
+        filtered_updates = []
+        for item in updates:
+            rng = str(item.get("range", ""))
+            # Generic regimen payloads are exactly six-cell row ranges beginning at
+            # one of the nine regimen start columns.
+            left = rng.split(":", 1)[0]
+            left_col, left_row = split_cell_ref(left) if left else ("", -1)
+            if left_row == matched_row and column_letter_to_number(left_col) in regimen_start_nums:
+                continue
+            if rng in regimen_input_ranges:
+                continue
+            filtered_updates.append(item)
+        updates = filtered_updates + regimen_updates
 
         successful_updates, failed_updates = safe_apply_updates(worksheet, updates)
 
-        # Read back the six BPaLM input cells so the upload response proves what
-        # actually reached Google Sheets. Total RK is formula-driven and is not overwritten.
-        bpalm_written = worksheet.get(f"RE{matched_row}:RJ{matched_row}")
-        bpalm_expected = [clean_number(v) for v in source_blocks["drtb_regimens"][0]]
+        # Read back ALL nine regimen input blocks so the response proves the
+        # complete 23.1-23.9 matrix (including zeros) reached Google Sheets.
+        regimen_read_back = {}
+        for idx, (start_col, values) in enumerate(zip(DRTB_REGIMEN_START_COLS, source_blocks["drtb_regimens"]), start=1):
+            start_num = column_letter_to_number(start_col)
+            end_col = column_number_to_letter(start_num + 5)
+            rng = f"{start_col}{matched_row}:{end_col}{matched_row}"
+            got = worksheet.get(rng)
+            regimen_read_back[f"23.{idx}"] = {
+                "range": rng,
+                "expected": [clean_number(v) for v in values],
+                "read_back": got[0] if got else [],
+            }
 
         contact_ws, contact_tab = open_dstb_contact_sheet(workbook, source_month_sheet)
         contact_row = find_facility_row(contact_ws, facility_name)
@@ -2441,11 +2468,7 @@ async def upload(
             "matched_target_row": matched_row,
             "updated_cells": successful_updates,
             "skipped_cells": failed_updates,
-            "drtb_regimen_write_check": {
-                "bpalm_range": f"RE{matched_row}:RJ{matched_row}",
-                "expected": bpalm_expected,
-                "read_back": bpalm_written[0] if bpalm_written else [],
-            },
+            "drtb_regimen_write_check": regimen_read_back,
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
         }
