@@ -793,55 +793,6 @@ export default function App() {
                   </div>
                 )}
 
-                {!isPmtct && previewData.new_indicators_preview?.drtb_regimen_rows?.length > 0 && (
-                  <div className="mt-6 rounded-[24px] border border-violet-200 bg-violet-50 p-5">
-                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h4 className="text-xl font-bold text-slate-900">RR/MDR-TB started on treatment by regimen</h4>
-                        <p className="mt-1 text-sm text-slate-600">Indicator 23.1–23.9 · exact grouped values prepared for the monthly master sheet</p>
-                      </div>
-                      <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700">
-                        Total {previewData.new_indicators_preview.drtb_regimen_total ?? 0}
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto rounded-2xl border border-violet-100 bg-white">
-                      <table className="min-w-full text-sm">
-                        <thead className="bg-violet-50 text-slate-600">
-                          <tr>
-                            <th className="px-3 py-3 text-left">Regimen</th>
-                            <th className="px-3 py-3 text-center">M 0–4</th>
-                            <th className="px-3 py-3 text-center">M 5–14</th>
-                            <th className="px-3 py-3 text-center">M 15+</th>
-                            <th className="px-3 py-3 text-center">F 0–4</th>
-                            <th className="px-3 py-3 text-center">F 5–14</th>
-                            <th className="px-3 py-3 text-center">F 15+</th>
-                            <th className="px-3 py-3 text-center">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {previewData.new_indicators_preview.drtb_regimen_rows.map((r) => (
-                            <tr key={r.indicator} className="border-t border-slate-100">
-                              <td className="px-3 py-3 font-medium text-slate-800">{r.indicator} · {r.regimen}</td>
-                              <td className="px-3 py-3 text-center">{r.male_0_4}</td>
-                              <td className="px-3 py-3 text-center">{r.male_5_14}</td>
-                              <td className="px-3 py-3 text-center">{r.male_15_plus}</td>
-                              <td className="px-3 py-3 text-center">{r.female_0_4}</td>
-                              <td className="px-3 py-3 text-center">{r.female_5_14}</td>
-                              <td className="px-3 py-3 text-center">{r.female_15_plus}</td>
-                              <td className="px-3 py-3 text-center font-bold">{r.total}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {previewData.new_indicators_preview?.drtb_regimen_23_10_check && (
-                      <p className={`mt-3 text-sm font-semibold ${previewData.new_indicators_preview.drtb_regimen_23_10_check.matches ? "text-emerald-700" : "text-rose-700"}`}>
-                        23.10 total check: {previewData.new_indicators_preview.drtb_regimen_23_10_check.matches ? "matches the sum of 23.1–23.9" : "does not match the sum of 23.1–23.9"}
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 {!isPmtct && previewData.contact_investigation && (
                   <div className="mt-6 rounded-[24px] border border-blue-200 bg-blue-50 p-5">
                     <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
