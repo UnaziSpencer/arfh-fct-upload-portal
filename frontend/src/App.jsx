@@ -826,8 +826,45 @@ export default function App() {
                               ["Presumptive contacts evaluated", "evaluated_contacts"],
                               ["Contacts diagnosed with TB", "diagnosed_contacts"],
                               ["Diagnosed contacts started treatment", "treated_contacts"],
+                              ["Total eligible for TPT", "__total_tpt_eligible"],
+                              ["Total placed on TPT", "__total_tpt_placed"],
                             ].map(([label, key]) => {
-                              const v = previewData.contact_investigation.values[key] || {};
+                              const values = previewData.contact_investigation.values;
+                              let v = values[key] || {};
+
+                              if (key === "__total_tpt_eligible") {
+                                const u5 = values.tpt_eligible_u5 || {};
+                                const ge5 = values.tpt_eligible_ge5 || {};
+                                v = {
+                                  male_u5: u5.male ?? 0,
+                                  male_5_plus: ge5.male ?? 0,
+                                  female_u5: u5.female ?? 0,
+                                  female_5_plus: ge5.female ?? 0,
+                                  total: (Number(u5.total) || 0) + (Number(ge5.total) || 0),
+                                };
+                              }
+
+                              if (key === "__total_tpt_placed") {
+                                const regimenKeys = [
+                                  ["tpt_1hp_u5", "tpt_1hp_ge5"],
+                                  ["tpt_3hp_u5", "tpt_3hp_ge5"],
+                                  ["tpt_3hr_u5", "tpt_3hr_ge5"],
+                                  ["tpt_6h_u5", "tpt_6h_ge5"],
+                                ];
+                                v = regimenKeys.reduce(
+                                  (acc, [u5Key, ge5Key]) => {
+                                    const u5 = values[u5Key] || {};
+                                    const ge5 = values[ge5Key] || {};
+                                    acc.male_u5 += Number(u5.male) || 0;
+                                    acc.male_5_plus += Number(ge5.male) || 0;
+                                    acc.female_u5 += Number(u5.female) || 0;
+                                    acc.female_5_plus += Number(ge5.female) || 0;
+                                    acc.total += (Number(u5.total) || 0) + (Number(ge5.total) || 0);
+                                    return acc;
+                                  },
+                                  { male_u5: 0, male_5_plus: 0, female_u5: 0, female_5_plus: 0, total: 0 }
+                                );
+                              }
                               return (
                                 <tr key={key} className="border-t border-slate-100">
                                   <td className="px-4 py-2.5 font-medium text-slate-700">{label}</td>
@@ -844,23 +881,6 @@ export default function App() {
                       </div>
                     )}
 
-                    {previewData.contact_investigation.values && (
-                      <div className="mt-4">
-                        <h5 className="mb-2 font-semibold text-slate-800">TPT eligibility / initiation</h5>
-                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-                          {[
-                            ["Eligible U-5", "tpt_eligible_u5"], ["Eligible 5+", "tpt_eligible_ge5"],
-                            ["1HP U-5", "tpt_1hp_u5"], ["1HP 5+", "tpt_1hp_ge5"],
-                            ["3HP U-5", "tpt_3hp_u5"], ["3HP 5+", "tpt_3hp_ge5"],
-                            ["3HR U-5", "tpt_3hr_u5"], ["3HR 5+", "tpt_3hr_ge5"],
-                            ["6H U-5", "tpt_6h_u5"], ["6H 5+", "tpt_6h_ge5"],
-                          ].map(([label, key]) => {
-                            const v = previewData.contact_investigation.values[key] || {};
-                            return <PreviewValue key={key} label={label} value={`M ${v.male ?? 0} · F ${v.female ?? 0} · Total ${v.total ?? 0}`} />;
-                          })}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
