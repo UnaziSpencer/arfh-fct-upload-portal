@@ -1871,6 +1871,47 @@ def validation_summary_from_pmtct_result(result: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def build_performance_snapshot(source_blocks: Dict[str, Any]) -> Dict[str, Any]:
+    """Store source indicator counts without double-counting categories or regimen subtotals."""
+    providers = ("facility", "pmv", "community", "lab", "tba")
+    by_provider = {}
+    for provider in providers:
+        by_provider[provider] = {
+            indicator: clean_number(sum(source_blocks[indicator][provider]))
+            for indicator in ("attendance", "screened", "presumptive", "diagnosed", "notified",
+                              "drtb_presumptive", "drtb_notified", "drtb_started")
+        }
+    totals = {
+        indicator: clean_number(sum(by_provider[p][indicator] for p in providers))
+        for indicator in ("attendance", "screened", "presumptive", "diagnosed", "notified",
+                          "drtb_presumptive", "drtb_notified", "drtb_started")
+    }
+    totals["evaluated"] = clean_number(sum(source_blocks["evaluated"].values()))
+    totals["drtb_evaluated_xpert"] = clean_number(sum(source_blocks["drtb_evaluated_xpert"]))
+    totals["currently_receiving_treatment"] = clean_number(sum(source_blocks["currently_receiving_treatment"]))
+    totals["referred_public_other"] = clean_number(sum(source_blocks["referred_public_other"]))
+    totals["treatment_started"] = clean_number(sum(sum(v) for v in source_blocks["category_started"].values()))
+    totals["hiv_positive"] = clean_number(sum(source_blocks["hiv_status"]["positive"]))
+    totals["art"] = clean_number(sum(source_blocks["art"]))
+    totals["cpt"] = clean_number(sum(source_blocks["cpt"]))
+    regimen_counts = {
+        f"23.{idx}": clean_number(sum(values))
+        for idx, values in enumerate(source_blocks["drtb_regimens"], start=1)
+    }
+    return {
+        "schema_version": 1,
+        "by_provider": by_provider,
+        "totals": totals,
+        "drtb_regimens": regimen_counts,
+        "definitions": {
+            "notified": "DS-TB notification, as recorded in the source notified block",
+            "drtb_notified": "DR-TB notification, as recorded in the separate source DR-TB block",
+            "referred_public_other": "Diagnosed TB referred to public or other facilities; do not automatically add to notifications",
+            "drtb_regimens": "DR-TB started on treatment by regimen; breakdown, not an additional notification count"
+        },
+    }
+
+
 def log_upload(
     facility_name: str,
     lga: str,
@@ -1886,6 +1927,7 @@ def log_upload(
     status: str,
     message: str,
     summary: Dict[str, float],
+    performance_snapshot: Optional[Dict[str, Any]] = None,
 ):
     conn = get_connection()
     cur = conn.cursor()
@@ -1896,7 +1938,7 @@ def log_upload(
             facility_name, lga, state, report_year, report_month, target_tab, quarter,
             workbook_id, matched_row, uploaded_filename, updated_cells, status, message,
             attendance_total, screened_total, presumptive_total, diagnosed_total, notified_total
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         """,
         (
             facility_name,
@@ -1920,8 +1962,54 @@ def log_upload(
         ),
     )
 
+    inserted_log_id = cur.fetchone()["id"]
+    if performance_snapshot is not None and status == "uploaded":
+        # The same DB transaction records the audit row and replaces this facility/month
+        # snapshot, so a corrected re-upload cannot double-count historical submissions.
+        cur.execute(
+            """INSERT INTO facility_performance (
+                state, lga, facility_name, report_year, report_month,
+                upload_log_id, indicators_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (state, lga, facility_name, report_year, report_month)
+            DO UPDATE SET upload_log_id=excluded.upload_log_id,
+                          indicators_json=excluded.indicators_json,
+                          updated_at=CURRENT_TIMESTAMP""",
+            (state, lga, facility_name, str(report_year), report_month,
+             inserted_log_id, json.dumps(performance_snapshot, allow_nan=False)),
+        )
     conn.commit()
     conn.close()
+
+
+@app.get("/api/performance")
+def get_performance(
+    state: Optional[str] = None,
+    report_year: Optional[str] = None,
+    report_month: Optional[str] = None,
+    _: bool = Depends(require_auth),
+):
+    """Private facility/month snapshots. LC ownership is not inferred."""
+    clauses = []
+    params = []
+    for column, value in (("state", state), ("report_year", report_year), ("report_month", report_month)):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    conn = get_connection()
+    try:
+        rows = conn.cursor().execute(
+            "SELECT state, lga, facility_name, report_year, report_month, "
+            "updated_at, indicators_json FROM facility_performance" + where +
+            " ORDER BY state, lga, facility_name LIMIT 1000", tuple(params)
+        ).fetchall()
+        return {"count": len(rows), "facilities": [
+            {**{k: v for k, v in dict(row).items() if k != "indicators_json"},
+             "indicators": json.loads(row["indicators_json"])} for row in rows
+        ]}
+    finally:
+        conn.close()
 
 
 @app.get("/")
@@ -2455,6 +2543,9 @@ async def upload(
             status=status,
             message=message,
             summary=summary,
+            # Only persist analytics if both master and contact-sheet writes succeeded.
+            performance_snapshot=(build_performance_snapshot(source_blocks)
+                                  if status == "uploaded" and not failed_updates else None),
         )
 
         return {
