@@ -36,6 +36,13 @@ export default function App() {
   const [validationData, setValidationData] = useState(null);
   const [uploadData, setUploadData] = useState(null);
   const [uploadLogs, setUploadLogs] = useState([]);
+  const [activeView, setActiveView] = useState("upload");
+  const [performanceRows, setPerformanceRows] = useState([]);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+  const [performanceError, setPerformanceError] = useState("");
+  const [dashboardState, setDashboardState] = useState("All");
+  const [dashboardMonth, setDashboardMonth] = useState("All");
+  const [dashboardYear, setDashboardYear] = useState("2026");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
 
@@ -307,6 +314,43 @@ export default function App() {
     }
   };
 
+  const fetchPerformance = async () => {
+    setPerformanceLoading(true);
+    setPerformanceError("");
+    try {
+      const params = new URLSearchParams();
+      if (dashboardState !== "All") params.set("state", dashboardState);
+      if (dashboardMonth !== "All") params.set("report_month", dashboardMonth);
+      if (dashboardYear !== "All") params.set("report_year", dashboardYear);
+      const response = await fetch(`${API_BASE_URL}/api/performance?${params}`, { headers: getAuthHeaders() });
+      if (response.status === 401) {
+        localStorage.removeItem(PASSWORD_STORAGE_KEY);
+        setIsAuthenticated(false);
+        throw new Error("Session expired. Please log in again.");
+      }
+      if (!response.ok) throw new Error(`Could not load dashboard (HTTP ${response.status}).`);
+      const data = await response.json();
+      setPerformanceRows(Array.isArray(data.facilities) ? data.facilities : []);
+    } catch (error) {
+      setPerformanceRows([]);
+      setPerformanceError(error.message || "Dashboard unavailable.");
+    } finally {
+      setPerformanceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated && activeView === "dashboard") fetchPerformance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, activeView, dashboardState, dashboardMonth, dashboardYear]);
+
+  const dashboardTotals = useMemo(() => {
+    const keys = ["attendance", "screened", "presumptive", "evaluated", "diagnosed", "notified", "treatment_started", "hiv_positive", "art", "cpt", "drtb_presumptive", "drtb_evaluated_xpert", "drtb_notified", "drtb_started"];
+    const totals = Object.fromEntries(keys.map((key) => [key, 0]));
+    performanceRows.forEach((row) => keys.forEach((key) => { totals[key] += Number(row.indicators?.totals?.[key]) || 0; }));
+    return totals;
+  }, [performanceRows]);
+
   const handleFileChange = (event) => {
     const selectedFile = event.target.files?.[0] || null;
     setFile(selectedFile);
@@ -524,6 +568,36 @@ export default function App() {
           </button>
         </div>
 
+        <div className="mb-5 flex flex-wrap gap-2">
+          <button type="button" onClick={() => setActiveView("upload")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "upload" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Upload reports</button>
+          <button type="button" onClick={() => setActiveView("dashboard")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "dashboard" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Analytics dashboard</button>
+        </div>
+        {activeView === "dashboard" ? (
+          <section className="space-y-5 rounded-[28px] bg-white p-5 shadow-sm md:p-7">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><h2 className="text-3xl font-bold text-slate-900">TB Performance Dashboard</h2><p className="mt-1 text-sm text-slate-500">Facility-level records from successful PPM uploads. No estimates or duplicate regimen additions.</p></div>
+              <button type="button" onClick={fetchPerformance} disabled={performanceLoading} className={secondaryButtonClass}>{performanceLoading ? "Loading…" : "Refresh data"}</button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <Field label="State"><select className={inputClass} value={dashboardState} onChange={(e) => setDashboardState(e.target.value)}><option value="All">All states</option>{stateOptions.map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
+              <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={(e) => setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
+              <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={(e) => setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
+            </div>
+            {performanceError && <p className="rounded-xl bg-red-50 p-3 text-red-700">{performanceError}</p>}
+            <p className="text-sm text-slate-500">{performanceRows.length} facility-month records returned{performanceRows.length === 1000 ? " (backend limit reached: totals may be incomplete; narrow filters)" : ""}. Each facility may appear in multiple months.</p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified (DS-TB)", "notified"], ["Treatment started (DS-TB)", "treatment_started"], ["HIV positive", "hiv_positive"], ["On ART", "art"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <h3 className="mb-4 text-xl font-bold">TB service cascade</h3>
+              {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified", "notified"], ["Treatment started", "treatment_started"]].map(([label, key]) => (
+                <div key={key} className="mb-3 grid grid-cols-[110px_1fr_65px] items-center gap-3 text-sm"><span>{label}</span><div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#165693]" style={{width: `${dashboardTotals.screened > 0 ? Math.min(100, dashboardTotals[key] / dashboardTotals.screened * 100) : 0}%`}} /></div><strong className="text-right">{dashboardTotals[key].toLocaleString()}</strong></div>
+              ))}
+            </div>
+            <div><h3 className="mb-3 text-xl font-bold">Drug-resistant TB</h3><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{[["DRTB presumptive", "drtb_presumptive"], ["DRTB evaluated by Xpert", "drtb_evaluated_xpert"], ["RR/MDR-TB notified", "drtb_notified"], ["RR/MDR-TB started", "drtb_started"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}</div></div>
+            <div><h3 className="mb-3 text-xl font-bold">Facility performance</h3><div className="overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="bg-slate-100"><tr>{["State", "LGA", "Facility", "Month", "Screened", "Diagnosed", "Notified", "DRTB notified"].map((x) => <th key={x} className="whitespace-nowrap px-3 py-3">{x}</th>)}</tr></thead><tbody>{performanceRows.map((r, i) => <tr key={`${r.state}-${r.lga}-${r.facility_name}-${r.report_year}-${r.report_month}-${i}`} className="border-b border-slate-100"><td className="px-3 py-2">{r.state}</td><td className="px-3 py-2">{r.lga}</td><td className="px-3 py-2">{r.facility_name}</td><td className="px-3 py-2">{r.report_month} {r.report_year}</td>{["screened", "diagnosed", "notified", "drtb_notified"].map((key) => <td key={key} className="px-3 py-2">{Number(r.indicators?.totals?.[key] || 0).toLocaleString()}</td>)}</tr>)}</tbody></table>{!performanceRows.length && !performanceLoading && <p className="p-4 text-slate-500">No performance records found for the selected filters.</p>}</div></div>
+          </section>
+        ) : (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[0.95fr_1.2fr]">
           <section className="rounded-[28px] bg-[#165693] p-6 text-white shadow-lg">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm">
@@ -967,6 +1041,7 @@ export default function App() {
             </div>
           </section>
         </div>
+        )}
       </div>
     </div>
   );
