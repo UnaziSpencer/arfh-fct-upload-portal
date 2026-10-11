@@ -687,6 +687,35 @@ export default function App() {
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified (DS-TB)", "notified"], ["Treatment started (DS-TB)", "treatment_started"], ["HIV positive", "hiv_positive"], ["On ART", "art"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}
             </div>
+            <div className="rounded-2xl border border-slate-200 p-5">
+              <div className="mb-4">
+                <h3 className="text-xl font-bold text-slate-900">TB Performance Summary</h3>
+                <p className="mt-1 text-sm text-slate-500">Rates calculated from the selected reporting records. A missing denominator displays N/A.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Presumptive yield", "presumptive", "screened", "#2563eb"],
+                  ["Evaluation coverage", "evaluated", "presumptive", "#059669"],
+                  ["Diagnostic yield", "diagnosed", "evaluated", "#7c3aed"],
+                  ["Treatment initiation", "treatment_started", "notified", "#0891b2"],
+                ].map(([label, numeratorKey, denominatorKey, barColor]) => {
+                  const numerator = dashboardTotals[numeratorKey];
+                  const denominator = dashboardTotals[denominatorKey];
+                  const rate = denominator > 0 ? (numerator / denominator) * 100 : null;
+                  return (
+                    <div key={label} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+                      <p className="mt-2 text-3xl font-bold text-slate-900">{rate === null ? "N/A" : `${rate.toFixed(1)}%`}</p>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                        <div className="h-full rounded-full transition-all duration-300" style={{ width: `${rate === null ? 0 : Math.min(100, Math.max(0, rate))}%`, backgroundColor: barColor }} />
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">{numerator.toLocaleString()} / {denominator.toLocaleString()} reported</p>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-3 text-xs text-slate-500">These ratios compare counts within the selected reporting period; they do not establish that the same patients moved through each stage. Colours distinguish indicators, not performance ratings.</p>
+            </div>
             <div className="rounded-2xl border border-slate-200 p-4">
               <h3 className="mb-4 text-xl font-bold">TB service cascade</h3>
               {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified", "notified"], ["Treatment started", "treatment_started"]].map(([label, key]) => (
