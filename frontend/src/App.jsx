@@ -367,15 +367,71 @@ export default function App() {
     a.download = `ARFH_TB_${dashboardState}_${dashboardLga}_${dashboardMonth}_${dashboardYear}.csv`.replace(/[^a-zA-Z0-9_.-]/g, "_");
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
+  const exportExcel = () => {
+    if (!visibleRows.length || performanceRows.length >= 1000) return;
+    const keys = ["attendance", "screened", "presumptive", "evaluated", "diagnosed", "notified", "treatment_started", "hiv_positive", "art", "cpt", "drtb_presumptive", "drtb_evaluated_xpert", "drtb_notified", "drtb_started"];
+    const sum = (k) => dashboardTotals[k] || 0;
+    const ratio = (a,b) => b ? Math.round(a/b*1000)/10 : "N/A";
+    const sheets = [
+      {name:"Executive Summary", rows:[
+        ["ARFH | TB PROGRAMME PERFORMANCE REPORT"],
+        ["State",dashboardState,"LGA",dashboardLga,"Month",dashboardMonth,"Year",dashboardYear],
+        ["Facility-month records",visibleRows.length],[],
+        ["Indicator","Reported count"],
+        ...keys.map(k=>[k.replaceAll("_"," ").toUpperCase(),sum(k)]),[],
+        ["Performance metric","Rate (%)"],
+        ["Presumptive among screened",ratio(sum("presumptive"),sum("screened"))],
+        ["Evaluation coverage",ratio(sum("evaluated"),sum("presumptive"))],
+        ["Diagnostic yield",ratio(sum("diagnosed"),sum("evaluated"))],
+        ["Treatment initiation / notified",ratio(sum("treatment_started"),sum("notified"))],[],
+        ["Interpretation","Reporting-period ratios, not longitudinal patient tracking."],
+        ["Coverage","Only uploaded facility-month records; no expected reporting denominator supplied."]
+      ]},
+      {name:"Facility Performance", rows:[
+        ["State","LGA","Facility","Year","Month",...keys],
+        ...visibleRows.map(r=>[r.state,r.lga,r.facility_name,r.report_year,r.report_month,...keys.map(k=>Number(r.indicators?.totals?.[k])||0)])
+      ]},
+      {name:"DRTB", rows:[
+        ["State","LGA","Facility","Year","Month","DRTB presumptive","DRTB evaluated by Xpert","RR-MDR TB notified","RR-MDR TB started",...Array.from({length:9},(_,i)=>`Regimen 23.${i+1}`)],
+        ...visibleRows.map(r=>[r.state,r.lga,r.facility_name,r.report_year,r.report_month,...["drtb_presumptive","drtb_evaluated_xpert","drtb_notified","drtb_started"].map(k=>Number(r.indicators?.totals?.[k])||0),...Array.from({length:9},(_,i)=>Number(r.indicators?.drtb_regimens?.[`23.${i+1}`])||0)])
+      ]},
+      {name:"Data Quality", rows:[
+        ["Check","Result","Comment"],
+        ["Records exported",visibleRows.length,"Distinct uploaded facility-month snapshots"],
+        ["Backend limit",performanceRows.length>=1000?"Reached":"Not reached","Export blocked if 1,000-record limit reached"],
+        ["Missing reporting periods","Not assessed","No expected facility reporting roster is connected"],
+        ["Negative values",visibleRows.some(r=>keys.some(k=>(Number(r.indicators?.totals?.[k])||0)<0))?"Review":"None found","Simple aggregate check"],
+        ["Presumptive above screened",visibleRows.filter(r=>(Number(r.indicators?.totals?.presumptive)||0)>(Number(r.indicators?.totals?.screened)||0)).length,"Number of facility-month records"],
+        ["Evaluated above presumptive",visibleRows.filter(r=>(Number(r.indicators?.totals?.evaluated)||0)>(Number(r.indicators?.totals?.presumptive)||0)).length,"Number of facility-month records"],
+        ["Regimen sum above DRTB started",visibleRows.filter(r=>Object.values(r.indicators?.drtb_regimens||{}).reduce((a,v)=>a+(Number(v)||0),0)>(Number(r.indicators?.totals?.drtb_started)||0)).length,"Number of facility-month records"],
+        ["Note","Not a full data audit","Checks are indicative and do not replace source validation"]
+      ]}
+    ];
+    const file = makeExcelWorkbook(sheets);
+    downloadReportBlob(file,`ARFH_TB_${dashboardState}_${dashboardLga}_${dashboardMonth}_${dashboardYear}.xlsx`);
+  };
   const exportPdf = () => {
     if (!visibleRows.length || performanceRows.length >= 1000) return;
-    const keys = [["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified", "notified"], ["Treatment started", "treatment_started"], ["HIV positive", "hiv_positive"], ["On ART", "art"], ["DRTB notified", "drtb_notified"], ["DRTB started", "drtb_started"]];
-    const safe = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    const html = `<!doctype html><html><head><title>ARFH TB Performance Report</title><style>body{font:14px Arial,sans-serif;color:#17243c;margin:32px}h1{color:#165693}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{padding:9px;border-bottom:1px solid #ddd;text-align:left}th{background:#e9f1fa}small{color:#667085}@media print{body{margin:14mm}button{display:none}}</style></head><body><h1>ARFH TB Performance Report</h1><p>${safe(dashboardState)} / ${safe(dashboardLga)} · ${safe(dashboardMonth)} ${safe(dashboardYear)}</p><small>${visibleRows.length} facility-month records · Generated ${new Date().toLocaleString()} · Source: ARFH Supabase snapshots</small><h2>Key indicators</h2><table><tbody>${keys.map(([label,key])=>`<tr><td>${safe(label)}</td><td><b>${dashboardTotals[key].toLocaleString()}</b></td></tr>`).join("")}</tbody></table><h2>Facility performance</h2><table><thead><tr><th>State</th><th>LGA</th><th>Facility</th><th>Month</th><th>Screened</th><th>Notified</th></tr></thead><tbody>${visibleRows.map(r=>`<tr><td>${safe(r.state)}</td><td>${safe(r.lga)}</td><td>${safe(r.facility_name)}</td><td>${safe(r.report_month)} ${safe(r.report_year)}</td><td>${Number(r.indicators?.totals?.screened)||0}</td><td>${Number(r.indicators?.totals?.notified)||0}</td></tr>`).join("")}</tbody></table><p><small>Counts represent recorded activity; conversion rates should not be interpreted as longitudinal patient tracking.</small></p></body></html>`;
-    const w = window.open("", "_blank");
-    if (!w) { setPerformanceError("Allow pop-ups to open the printable PDF report."); return; }
-    w.document.open(); w.document.write(html); w.document.close(); w.focus();
-    w.setTimeout(() => w.print(), 350);
+    const safe = (v) => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const fmt = k => (dashboardTotals[k]||0).toLocaleString();
+    const pct = (a,b) => b ? `${(a/b*100).toFixed(1)}%` : "N/A";
+    const metrics = [
+      ["Presumptive among screened", "presumptive", "screened"],
+      ["Evaluation coverage", "evaluated", "presumptive"],
+      ["Diagnostic yield", "diagnosed", "evaluated"],
+      ["Treatment initiation / notified", "treatment_started", "notified"]
+    ];
+    const stages = [["Screened","screened"],["Presumptive","presumptive"],["Evaluated","evaluated"],["Diagnosed","diagnosed"],["Notified","notified"],["Treatment started","treatment_started"]];
+    const max = Math.max(1,dashboardTotals.screened);
+    const bars = stages.map(([name,k],i)=>`<text x="4" y="${27+i*37}" font-size="12" fill="#243449">${safe(name)}</text><rect x="150" y="${13+i*37}" width="480" height="18" rx="6" fill="#eaf0f6"/><rect x="150" y="${13+i*37}" width="${Math.max(0,480*(dashboardTotals[k]||0)/max)}" height="18" rx="6" fill="#165693"/><text x="642" y="${27+i*37}" font-size="12" font-weight="bold">${fmt(k)}</text>`).join("");
+    const monthly = MONTH_OPTIONS.map(m=>({m,n:visibleRows.filter(r=>r.report_month===m||r.report_month===m.slice(0,3)).reduce((a,r)=>a+(Number(r.indicators?.totals?.notified)||0),0),has:visibleRows.some(r=>r.report_month===m||r.report_month===m.slice(0,3))}));
+    const mmax = Math.max(1,...monthly.map(x=>x.n));
+    const monthlyBars = monthly.map((x,i)=>`<rect x="${22+i*55}" y="${185-x.n/mmax*140}" width="30" height="${x.has?Math.max(2,x.n/mmax*140):0}" rx="3" fill="#2b79bc"/><text x="${37+i*55}" y="205" text-anchor="middle" font-size="11">${x.m.slice(0,3)}</text>${x.has?`<text x="${37+i*55}" y="${178-x.n/mmax*140}" text-anchor="middle" font-size="10">${x.n}</text>`:`<text x="${37+i*55}" y="185" text-anchor="middle" font-size="9" fill="#9aa6b2">—</text>`}`).join("");
+    const cards = [["Screened","screened"],["Presumptive","presumptive"],["Evaluated","evaluated"],["Diagnosed","diagnosed"],["Notified","notified"],["Treatment started","treatment_started"],["HIV positive","hiv_positive"],["On ART","art"]].map(([n,k])=>`<div class="kpi"><small>${safe(n)}</small><strong>${fmt(k)}</strong></div>`).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>ARFH TB Performance Report</title><style>@page{size:A4;margin:16mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#17243c;margin:0}header{background:#165693;color:white;padding:23px 26px;border-radius:10px}header h1{margin:5px 0;font-size:24px}header p{margin:5px 0;color:#dbeafa}.eyebrow{letter-spacing:2px;text-transform:uppercase;font-size:10px}.meta{margin:16px 0;color:#52657a}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.kpi{border:1px solid #dce6f0;border-radius:8px;padding:12px;background:#f7faff}.kpi small{display:block;color:#536a83;text-transform:uppercase;font-size:9px}.kpi strong{display:block;font-size:21px;margin-top:5px;color:#12395e}h2{font-size:16px;color:#12395e;border-bottom:2px solid #e2ebf4;padding-bottom:7px;margin:22px 0 12px}.rategrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.rate{padding:11px;background:#eef5fb;border-left:4px solid #165693}.rate b{float:right;font-size:16px}svg{width:100%;height:auto}table{border-collapse:collapse;width:100%;font-size:10px}th,td{padding:8px;border-bottom:1px solid #e2e8f0;text-align:left}th{background:#eaf1f8;color:#12395e}tr{break-inside:avoid}.note{color:#607086;font-size:10px;line-height:1.6}.break{break-before:page}.footer{margin-top:20px;border-top:1px solid #dce6f0;padding-top:9px;color:#64748b;font-size:10px}@media print{header{-webkit-print-color-adjust:exact;print-color-adjust:exact}.kpi,.rate,th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><header><div class="eyebrow">ARFH · Programme intelligence</div><h1>TB Performance Report</h1><p>${safe(dashboardState)} / ${safe(dashboardLga)} · ${safe(dashboardMonth)} ${safe(dashboardYear)}</p></header><div class="meta">${visibleRows.length} facility-month record(s) · Generated ${safe(new Date().toLocaleString())} · Source: ARFH Supabase facility snapshots</div><h2>Executive performance summary</h2><div class="grid">${cards}</div><h2>Service delivery indicators</h2><div class="rategrid">${metrics.map(([n,a,b])=>`<div class="rate">${safe(n)}<b>${pct(dashboardTotals[a],dashboardTotals[b])}</b></div>`).join("")}</div><h2>TB service cascade</h2><svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg">${bars}</svg><p class="note">Ratios compare counts reported within the selected period and do not establish longitudinal patient linkage.</p><h2>Monthly notification trend</h2><svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg">${monthlyBars}</svg><p class="note">Dash (—) indicates no uploaded facility-month record in the selected dataset, not zero service activity.</p><h2>Drug-resistant TB</h2><div class="grid">${[["Presumptive","drtb_presumptive"],["Evaluated by Xpert","drtb_evaluated_xpert"],["RR/MDR notified","drtb_notified"],["RR/MDR started","drtb_started"]].map(([n,k])=>`<div class="kpi"><small>${safe(n)}</small><strong>${fmt(k)}</strong></div>`).join("")}</div><h2>Facility performance</h2><table><thead><tr><th>State</th><th>LGA</th><th>Facility</th><th>Month</th><th>Screened</th><th>Diagnosed</th><th>Notified</th><th>DRTB notified</th></tr></thead><tbody>${visibleRows.map(r=>`<tr><td>${safe(r.state)}</td><td>${safe(r.lga)}</td><td>${safe(r.facility_name)}</td><td>${safe(r.report_month)} ${safe(r.report_year)}</td>${["screened","diagnosed","notified","drtb_notified"].map(k=>`<td>${Number(r.indicators?.totals?.[k])||0}</td>`).join("")}</tr>`).join("")}</tbody></table><h2>Data quality and interpretation</h2><p class="note">This report includes only uploaded facility-month snapshots. Reporting completeness cannot be calculated without an expected facility reporting roster. Missing uploads are not treated as zero activity. Counts may represent different patient cohorts or reporting periods; interpret conversion rates accordingly. DRTB regimen categories are not added to notified totals.</p><div class="footer">ARFH TB Programme Intelligence · Generated from filtered uploaded records · Internal programme reporting</div></body></html>`;
+    const w=window.open("","_blank");
+    if(!w){setPerformanceError("Allow pop-ups to open the printable PDF report.");return;}
+    w.document.open();w.document.write(html);w.document.close();w.focus();w.setTimeout(()=>w.print(),500);
   };
 
   const dashboardTotals = useMemo(() => {
@@ -621,7 +677,8 @@ export default function App() {
               <label className="text-sm font-semibold text-slate-700">LGA</label>
               <select className="rounded-xl border border-slate-200 bg-white px-4 py-2" value={dashboardLga} onChange={(e) => setDashboardLga(e.target.value)}><option value="All">All LGAs</option>{dashboardLgas.map((name) => <option key={name} value={name}>{name}</option>)}</select>
               <div className="ml-auto flex flex-wrap gap-2">
-                <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportCsv} className={secondaryButtonClass}>Download Excel-compatible CSV</button>
+                <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportExcel} className={secondaryButtonClass}>Download Excel (.xlsx)</button>
+                <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportCsv} className={secondaryButtonClass}>Download CSV</button>
                 <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportPdf} className={primaryButtonClass}>Print / Save PDF</button>
               </div>
             </div>
@@ -637,8 +694,8 @@ export default function App() {
               ))}
             </div>
             <div className="rounded-2xl border border-slate-200 p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold text-slate-900">Monthly reporting trends</h3><p className="text-sm text-slate-500">Hover over a bar for its value. Months without uploaded records appear as zero.</p></div><select aria-label="Trend indicator" className="rounded-xl border border-slate-200 px-4 py-2" value={chartMetric} onChange={(e) => setChartMetric(e.target.value)}>{[["Notified", "notified"], ["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Treatment started", "treatment_started"], ["DRTB notified", "drtb_notified"]].map(([label,key])=><option key={key} value={key}>{label}</option>)}</select></div>
-              <div className="flex h-56 items-end gap-2 border-b border-slate-200 pb-1">{monthlySeries.map((point,i)=>{const max=Math.max(1,...monthlySeries.map(p=>p.count));return <div key={i} className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1" title={`${point.month}: ${point.count.toLocaleString()}`}><span className="text-xs font-semibold text-slate-700 opacity-0 transition group-hover:opacity-100">{point.count.toLocaleString()}</span><div className="w-full max-w-16 rounded-t-lg bg-[#165693] transition hover:bg-sky-500" style={{height:`${Math.max(point.count?5:1,point.count/max*88)}%`}} role="img" aria-label={`${point.month}: ${point.count}`} /><span className="text-[11px] text-slate-500">{point.month}</span></div>})}</div>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold text-slate-900">Monthly reporting trends</h3><p className="text-sm text-slate-500">Hover over a bar for its value. Months without uploaded records are marked as missing.</p></div><select aria-label="Trend indicator" className="rounded-xl border border-slate-200 px-4 py-2" value={chartMetric} onChange={(e) => setChartMetric(e.target.value)}>{[["Notified", "notified"], ["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Treatment started", "treatment_started"], ["DRTB notified", "drtb_notified"]].map(([label,key])=><option key={key} value={key}>{label}</option>)}</select></div>
+              <div className="flex h-56 items-end gap-2 border-b border-slate-200 pb-1">{monthlySeries.map((point,i)=>{const max=Math.max(1,...monthlySeries.map(p=>p.count));const reported=visibleRows.some(r=>r.report_month===MONTH_OPTIONS[i]||r.report_month===point.month);return <div key={i} className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1" title={`${point.month}: ${reported ? point.count.toLocaleString() : "No uploaded report"}`}><span className="text-xs font-semibold text-slate-700 opacity-0 transition group-hover:opacity-100">{reported ? point.count.toLocaleString() : "No data"}</span><div className="w-full max-w-16 rounded-t-lg bg-[#165693] transition hover:bg-sky-500" style={{height:`${reported ? Math.max(point.count?5:1,point.count/max*88) : 0}%`}} role="img" aria-label={`${point.month}: ${reported ? point.count : "No report"}`} /><span className="text-[11px] text-slate-500">{point.month}</span></div>})}</div>
               <p className="mt-3 text-xs text-slate-500">Data represents uploaded facility-month records, not projected activity.</p>
             </div>
             <div><h3 className="mb-3 text-xl font-bold">Drug-resistant TB</h3><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{[["DRTB presumptive", "drtb_presumptive"], ["DRTB evaluated by Xpert", "drtb_evaluated_xpert"], ["RR/MDR-TB notified", "drtb_notified"], ["RR/MDR-TB started", "drtb_started"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}</div></div>
@@ -1152,3 +1209,43 @@ const secondaryButtonClass =
 
 const warningButtonClass =
   "rounded-[20px] bg-amber-200 px-6 py-3 text-lg font-semibold text-amber-900 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50";
+
+
+// Dependency-free, standards-compliant XLSX writer (ZIP store method + SpreadsheetML).
+// All string cells are inline strings, preventing formula injection in downloaded reports.
+function downloadReportBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename.replace(/[^a-zA-Z0-9_.-]/g, "_");
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function makeExcelWorkbook(sheets) {
+  const enc = new TextEncoder();
+  const xml = v => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+  const colName = n => {let s="";for(let i=n+1;i>0;i=Math.floor((i-1)/26))s=String.fromCharCode(65+(i-1)%26)+s;return s;};
+  const worksheet = rows => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="16"/><sheetData>${rows.map((row,i)=>`<row r="${i+1}">${row.map((v,j)=>{if(v===null||v===undefined||v==="")return "";const ref=`${colName(j)}${i+1}`;return typeof v==="number"&&Number.isFinite(v)?`<c r="${ref}"><v>${v}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${xml(v)}</t></is></c>`;}).join("")}</row>`).join("")}</sheetData></worksheet>`;
+  const entries = [
+    ["[Content_Types].xml",`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}</Types>`],
+    ["_rels/.rels",`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ["xl/workbook.xml",`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s,i)=>`<sheet name="${xml(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join("")}</sheets></workbook>`],
+    ["xl/_rels/workbook.xml.rels",`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join("")}</Relationships>`],
+    ...sheets.map((s,i)=>[`xl/worksheets/sheet${i+1}.xml`,worksheet(s.rows)])
+  ];
+  const table = new Uint32Array(256);
+  for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=c&1?0xedb88320^(c>>>1):c>>>1;table[i]=c>>>0;}
+  const crc32 = data => {let c=0xffffffff;for(const b of data)c=table[(c^b)&255]^(c>>>8);return (c^0xffffffff)>>>0;};
+  const u16 = n => [n&255,(n>>>8)&255];
+  const u32 = n => [n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255];
+  const parts=[],central=[];let offset=0;
+  for(const [path,content] of entries){
+    const name=enc.encode(path),data=enc.encode(content),crc=crc32(data);
+    const local=new Uint8Array([80,75,3,4,...u16(20),...u16(0x800),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0)]);
+    parts.push(local,name,data);
+    central.push(new Uint8Array([80,75,1,2,...u16(20),...u16(20),...u16(0x800),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(offset)]),name);
+    offset+=local.length+name.length+data.length;
+  }
+  const centralSize=central.reduce((n,p)=>n+p.length,0);
+  const end=new Uint8Array([80,75,5,6,...u16(0),...u16(0),...u16(entries.length),...u16(entries.length),...u32(centralSize),...u32(offset),...u16(0)]);
+  return new Blob([...parts,...central,end],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
