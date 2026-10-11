@@ -3,6 +3,8 @@ import json
 import math
 import re
 import tempfile
+import time
+import random
 from pathlib import Path
 from difflib import SequenceMatcher
 from typing import Dict, Any, Optional, List, Tuple
@@ -1388,7 +1390,7 @@ def flatten_preview_to_updates(preview_payload: Dict[str, Any]) -> List[Dict[str
             return
 
         # Leaf dictionary: keys are cell references like M12, N12, O12.
-        if obj and all(isinstance(k, str) and any(ch.isdigit() for ch in k) for k in obj.keys()):
+        if obj and all(isinstance(k, str) and re.fullmatch(r"[A-Za-z]+[1-9][0-9]*", k) for k in obj.keys()):
             updates.append(compact_cell_dict_to_row_update(obj))
             return
 
@@ -1433,42 +1435,65 @@ def sanitize_updates(updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
+    """Batch writable cells, isolate protected ranges, and respect Sheets quotas.
+
+    A 400 protected-cell error is isolated by dividing the batch, never by
+    immediately firing a request for every range. 429/5xx errors are retried
+    with exponential backoff, then raised (not silently counted as skips).
     """
-    Apply updates safely.
-    1. Sanitises all ranges and values.
-    2. Confirms payload is valid JSON with no NaN/Infinity.
-    3. Uses batch update first.
-    4. If batch fails because of protected cells/ranges, falls back range-by-range.
-    """
-    failed: List[Dict[str, str]] = []
     updates = sanitize_updates(updates)
-
     if not updates:
-        return 0, failed
+        return 0, []
 
-    try:
-        worksheet.batch_update(updates, value_input_option="USER_ENTERED")
-        return len(updates), failed
-    except Exception as batch_exc:
-        print(f"BATCH UPDATE FAILED, FALLING BACK TO RANGE UPDATES: {batch_exc}")
+    invalid = [u["range"] for u in updates if not re.fullmatch(
+        r"[A-Za-z]+[1-9][0-9]*(?::[A-Za-z]+[1-9][0-9]*)?", u["range"])]
+    if invalid:
+        raise HTTPException(status_code=500, detail=f"Invalid mapped Google Sheets ranges: {invalid}")
 
-    successful = 0
-    for update in updates:
-        cell_range = strip_sheet_name_from_range(update["range"])
-        values = clean_update_values(update["values"])
+    failures: List[Dict[str, str]] = []
+
+    def send_batch(batch):
+        for attempt in range(5):
+            try:
+                worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+                return
+            except Exception as exc:
+                error = str(exc).lower()
+                is_transient = any(x in error for x in (
+                    "[429]", "quota exceeded", "rate limit", "[500]", "[502]", "[503]", "[504]"))
+                if not is_transient:
+                    raise
+                if attempt == 4:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Google Sheets quota/service limit persists after retries. "
+                               "Upload is incomplete; retry later. Last error: " + str(exc),
+                    )
+                delay = min(2 ** attempt * 2 + random.uniform(0, 1), 25)
+                print(f"Google Sheets transient error; retrying batch in {delay:.1f}s: {exc}")
+                time.sleep(delay)
+
+    def apply(batch):
         try:
-            assert_json_safe(values, context=f"range {cell_range}")
-            worksheet.update(
-                range_name=cell_range,
-                values=values,
-                value_input_option="USER_ENTERED",
-            )
-            successful += 1
+            send_batch(batch)
+            return len(batch)
+        except HTTPException:
+            raise
         except Exception as exc:
-            failed.append({"range": cell_range, "error": str(exc)})
-            print(f"SKIPPED WRITE {cell_range}: {exc}")
+            error = str(exc).lower()
+            protected = any(x in error for x in (
+                "protected cell", "protected range", "protected sheet",
+                "protected cells", "protected ranges", "trying to edit a protected"))
+            if not protected:
+                raise HTTPException(status_code=502, detail=f"Google Sheets write failed: {exc}")
+            if len(batch) == 1:
+                failures.append({"range": batch[0]["range"], "error": str(exc)})
+                print(f"SKIPPED PROTECTED WRITE {batch[0]['range']}: {exc}")
+                return 0
+            middle = len(batch) // 2
+            return apply(batch[:middle]) + apply(batch[middle:])
 
-    return successful, failed
+    return apply(updates), failures
 
 
 def aggressive_normalize(value: str) -> str:
