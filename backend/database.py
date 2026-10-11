@@ -18,6 +18,9 @@ class PostgresCursor:
         self._cursor.execute(sql, params or ())
         return self
 
+    def fetchone(self):
+        return self._cursor.fetchone()
+
     def fetchall(self):
         return self._cursor.fetchall()
 
