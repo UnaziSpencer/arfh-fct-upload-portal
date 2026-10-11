@@ -1455,7 +1455,18 @@ def safe_apply_updates(worksheet, updates: List[Dict[str, Any]]) -> Tuple[int, L
     def send_batch(batch):
         for attempt in range(5):
             try:
-                worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+                # Use spreadsheet-level API with exactly ONE explicit tab prefix.
+                # Worksheet.batch_update may add the worksheet title again,
+                # producing invalid ranges like 'Tab'!Tab'!I59:L59.
+                escaped_title = worksheet.title.replace("'", "''")
+                qualified = [
+                    {"range": f"'{escaped_title}'!{item['range']}", "values": item['values']}
+                    for item in batch
+                ]
+                worksheet.spreadsheet.values_batch_update({
+                    "valueInputOption": "USER_ENTERED",
+                    "data": qualified,
+                })
                 return
             except Exception as exc:
                 error = str(exc).lower()
