@@ -2528,6 +2528,16 @@ async def upload(
         status = "uploaded" if successful_updates > 0 else "failed"
         message = f"Upload completed for {facility_name}. Successful writes: {successful_updates}. Skipped writes: {len(failed_updates)}."
 
+        # Protected/formula cells are intentionally not editable. They must not
+        # suppress analytics snapshots, but unexpected write failures still do.
+        unexpected_skips = [
+            item for item in failed_updates
+            if not any(marker in str(item.get("error", "")).lower()
+                       for marker in ("protected cell", "protected range", "protected sheet",
+                                      "protected cells", "protected ranges",
+                                      "trying to edit a protected"))
+        ]
+
         log_upload(
             facility_name=facility_name,
             lga=lga,
@@ -2545,7 +2555,7 @@ async def upload(
             summary=summary,
             # Only persist analytics if both master and contact-sheet writes succeeded.
             performance_snapshot=(build_performance_snapshot(source_blocks)
-                                  if status == "uploaded" and not failed_updates else None),
+                                  if status == "uploaded" and not unexpected_skips else None),
         )
 
         return {
@@ -2559,6 +2569,8 @@ async def upload(
             "matched_target_row": matched_row,
             "updated_cells": successful_updates,
             "skipped_cells": failed_updates,
+            "performance_snapshot_saved": status == "uploaded" and not unexpected_skips,
+            "unexpected_skipped_cells": unexpected_skips,
             "drtb_regimen_write_check": regimen_read_back,
             "detailed_age_validation": detailed_age_validation,
             "summary": summary,
