@@ -15,6 +15,33 @@ const MONTH_OPTIONS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
+// Monthly targets apply to each LC for every LGA in which they supervise facilities.
+const LC_MONTHLY_TARGETS = {
+  amac: { presumptive: 100, notified: 10 },
+  abaji: { presumptive: 50, notified: 5 },
+  bwari: { presumptive: 100, notified: 10 },
+  kwali: { presumptive: 75, notified: 8 },
+  kuje: { presumptive: 50, notified: 5 },
+  gwagwalada: { presumptive: 100, notified: 10 },
+};
+
+const lcAchievementStyle = (value) => value >= 100
+  ? { color: "#047857", background: "#ecfdf5", bar: "#059669", label: "Target met" }
+  : value >= 80
+    ? { color: "#92400e", background: "#fffbeb", bar: "#d97706", label: "Near target" }
+    : { color: "#b91c1c", background: "#fef2f2", bar: "#dc2626", label: "Below target" };
+
+function LcTargetCell({ actual, target, hasReport }) {
+  if (!hasReport) return <span className="italic text-slate-400">No report</span>;
+  if (!target) return <span className="text-slate-500">N/A</span>;
+  const percentage = actual / target * 100;
+  const style = lcAchievementStyle(percentage);
+  return <div className="min-w-[125px] rounded-lg px-2 py-1.5" style={{backgroundColor:style.background,color:style.color}} title={`${style.label}: ${actual} / ${target}`}>
+    <div className="flex items-baseline justify-between gap-2"><strong>{percentage.toFixed(1)}%</strong><span className="text-[11px]">{actual.toLocaleString()} / {target.toLocaleString()}</span></div>
+    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/10"><div className="h-full rounded-full" style={{width:`${Math.min(100,Math.max(0,percentage))}%`,backgroundColor:style.bar}}/></div>
+  </div>;
+}
+
 export default function App() {
   const [password, setPassword] = useState(localStorage.getItem(PASSWORD_STORAGE_KEY) || "");
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(localStorage.getItem(PASSWORD_STORAGE_KEY)));
@@ -48,7 +75,7 @@ export default function App() {
   const [chartMetric, setChartMetric] = useState("notified");
   const [lcLga, setLcLga] = useState("All");
   const [lcSelected, setLcSelected] = useState("All");
-  const [lcSort, setLcSort] = useState("notified");
+  const [lcSort, setLcSort] = useState("notifiedAchievement");
   const [contributionType, setContributionType] = useState("All");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
@@ -366,6 +393,7 @@ export default function App() {
     const keys = contributionType === "Hub" ? ["facility"] : ["pmv", "community", "lab", "tba"];
     return keys.reduce((sum, key) => sum + providers[key][metric], 0);
   };
+  useEffect(() => { if (activeView === "lc" && contributionType !== "Spoke") setContributionType("Spoke"); }, [activeView, contributionType]);
   const missingProviderRows = useMemo(() => contributionType === "All" ? 0 : performanceRows.filter(r => providerValue(r, "presumptive") === null).length, [performanceRows, contributionType]);
   const providerRows = useMemo(() => performanceRows.filter(r => contributionType === "All" || providerValue(r, "presumptive") !== null).map(r => ({ ...r, indicators: {
     ...r.indicators,
@@ -466,6 +494,9 @@ export default function App() {
     [a.state, a.lga, a.facility].map(normalizeLcKey).join("|"), a
   ])), []);
   const lcLgas = useMemo(() => [...new Set(lcAssignments.map(a => a.lga))].sort(), []);
+  // "All months" means 12 calendar months, even if only one month has uploaded data.
+  // With "All years" selected, a denominator is intentionally not inferred.
+  const lcTargetMonths = dashboardYear === "All" ? null : (dashboardMonth === "All" ? 12 : 1);
   const lcRoster = useMemo(() => {
     const roster = new Map();
     lcAssignments.filter(a => lcLga === "All" || a.lga === lcLga).forEach(a => {
@@ -484,21 +515,34 @@ export default function App() {
       item.months.add(`${r.report_year}-${r.report_month}`);
       ["presumptive","diagnosed","notified","screened","evaluated"].forEach(k => { item[k] += Number(r.indicators?.totals?.[k]) || 0; });
     });
-    return [...roster.values()].map(x => ({ ...x, lgas:[...x.lgas].join(", "), assigned:x.facilities.size, reporting:x.reported.size,
+    return [...roster.values()].map(x => {
+      const monthlyTarget = [...x.lgas].reduce((acc,lga) => {
+        const target = LC_MONTHLY_TARGETS[normalizeLcKey(lga)];
+        if (target) { acc.presumptive += target.presumptive; acc.notified += target.notified; }
+        return acc;
+      }, { presumptive: 0, notified: 0 });
+      const presumptiveTarget = lcTargetMonths === null ? null : monthlyTarget.presumptive * lcTargetMonths;
+      const notifiedTarget = lcTargetMonths === null ? null : monthlyTarget.notified * lcTargetMonths;
+      return { ...x, lgas:[...x.lgas].join(", "), assigned:x.facilities.size, reporting:x.reported.size,
+      presumptiveTarget, notifiedTarget,
+      presumptiveAchievement: x.reported.size && presumptiveTarget ? x.presumptive / presumptiveTarget * 100 : null,
+      notifiedAchievement: x.reported.size && notifiedTarget ? x.notified / notifiedTarget * 100 : null,
       diagnosticYield:(contributionType === "All" ? x.evaluated : x.presumptive) ? x.diagnosed / (contributionType === "All" ? x.evaluated : x.presumptive) * 100 : null,
       notificationRate:x.diagnosed ? x.notified / x.diagnosed * 100 : null
-    }));
-  }, [providerRows, lcMapping, lcLga, contributionType]);
+    }; });
+  }, [providerRows, lcMapping, lcLga, contributionType, lcTargetMonths]);
   const lcRows = useMemo(() => lcRoster.filter(x => lcSelected === "All" || x.lc === lcSelected)
-    .sort((a,b) => (b[lcSort] ?? -1) - (a[lcSort] ?? -1) || a.lc.localeCompare(b.lc)), [lcRoster, lcSelected, lcSort]);
+    .sort((a,b) => (b[lcSort] ?? -1) - (a[lcSort] ?? -1) ||
+      (b.notifiedAchievement ?? -1) - (a.notifiedAchievement ?? -1) ||
+      (b.presumptiveAchievement ?? -1) - (a.presumptiveAchievement ?? -1) || a.lc.localeCompare(b.lc)), [lcRoster, lcSelected, lcSort]);
   const lcUnmatched = useMemo(() => providerRows.filter(r => normalizeLcKey(r.state)==="fct" &&
     (lcLga === "All" || normalizeLcKey(r.lga)===normalizeLcKey(lcLga)) &&
     !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [providerRows,lcLga,lcMapping]);
   const lcExport = () => {
     if (!lcRows.length || performanceRows.length >= 1000) return;
-    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield (%)","Notification rate (%)","Contribution"];
+    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Presumptive target","Presumptive achievement (%)","Diagnosed","Notified","Notified target","Notification target achievement (%)","Diagnostic yield (%)","Notification rate (%)","Contribution","Period months"];
     const esc = v => `"${String(v ?? "").replace(/^[=+@-]/,"'$&").replace(/"/g,'""')}"`;
-    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.presumptive,x.diagnosed,x.notified,x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A",contributionType])];
+    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.reporting ? x.presumptive : "No report",x.presumptiveTarget??"N/A",x.presumptiveAchievement?.toFixed(1)??"N/A",x.reporting ? x.diagnosed : "No report",x.reporting ? x.notified : "No report",x.notifiedTarget??"N/A",x.notifiedAchievement?.toFixed(1)??"N/A",x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A",contributionType,lcTargetMonths??"N/A"])];
     const blob=new Blob(["\uFEFF"+lines.map(r=>r.map(esc).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"});
     const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_${contributionType}_${dashboardYear}_${dashboardMonth}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   };
@@ -730,14 +774,14 @@ export default function App() {
         <div className="mb-5 flex flex-wrap gap-2">
           <button type="button" onClick={() => setActiveView("upload")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "upload" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Upload reports</button>
           <button type="button" onClick={() => setActiveView("dashboard")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "dashboard" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Analytics dashboard</button>
-          <button type="button" onClick={() => { setDashboardState("FCT"); setActiveView("lc"); }} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "lc" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>LC Performance</button>
+          <button type="button" onClick={() => { setDashboardState("FCT"); setContributionType("Spoke"); setActiveView("lc"); }} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "lc" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>LC Performance</button>
         </div>
         {activeView === "lc" ? (
           <section className="space-y-5 rounded-[28px] bg-white p-5 shadow-sm md:p-7">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Facility-linked presumptive, diagnosed and notified TB cases</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Spoke contributions only (PMV, community pharmacy, standalone laboratory and TBA/healer). Facility-based activity belongs to Screening Officers.</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="LGA"><select className={inputClass} value={lcLga} onChange={e=>{setLcLga(e.target.value);setLcSelected("All");}}><option value="All">All FCT LGAs</option>{lcLgas.map(x=><option key={x}>{x}</option>)}</select></Field>
-              <Field label="Contribution"><select className={inputClass} value={contributionType} onChange={e=>setContributionType(e.target.value)}><option value="All">All contributions</option><option value="Hub">Hub · Facility-based</option><option value="Spoke">Spokes · PMV, pharmacy, lab, TBA</option></select></Field>
+              <Field label="LC contribution basis"><div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-900">Spoke only · PMV, pharmacy, lab, TBA</div></Field>
               <Field label="LC"><select className={inputClass} value={lcSelected} onChange={e=>setLcSelected(e.target.value)}><option value="All">All LCs</option>{lcRoster.map(x=><option key={x.lc} value={x.lc}>{x.lc}</option>)}</select></Field>
               <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={e=>setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>
               <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={e=>setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
@@ -752,12 +796,31 @@ export default function App() {
               <InfoCard title="Facilities reporting" value={lcRows.reduce((n,x)=>n+x.reporting,0)}/>
               <InfoCard title="Unmatched facility-month records" value={lcUnmatched.length}/>
             </div>
-            <div className="rounded-2xl border border-slate-200 p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold">Presumptive vs Diagnosed vs Notified</h3><p className="text-xs text-slate-500">Each LC's counts are summed across their assigned facilities for the selected period.</p></div><button className={secondaryButtonClass} type="button" disabled={!lcRows.length||performanceRows.length>=1000} onClick={lcExport}>Download LC CSV</button></div>
+            <div className="rounded-2xl border border-slate-200 p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold">Presumptive vs Diagnosed vs Notified</h3><p className="text-xs text-slate-500">Only Spoke contributions are summed across each LC's assigned facilities for the selected period. Facility-based contributions are excluded.</p></div><button className={secondaryButtonClass} type="button" disabled={!lcRows.length||performanceRows.length>=1000} onClick={lcExport}>Download LC CSV</button></div>
               <div className="space-y-4">{lcRows.map(x=>{const max=Math.max(1,...lcRows.map(r=>r.presumptive),...lcRows.map(r=>r.diagnosed),...lcRows.map(r=>r.notified));return <div key={x.lc} className="border-b border-slate-100 pb-3"><div className="mb-2 flex flex-wrap justify-between gap-2 text-sm font-semibold"><span>{x.lc}</span><span className="text-slate-500">{x.reporting}/{x.assigned} facilities reporting</span></div>{x.reporting===0?<p className="text-xs italic text-slate-500">No uploaded report for selected period</p>:[["Presumptive","presumptive","#2563eb"],["Diagnosed","diagnosed","#7c3aed"],["Notified","notified","#059669"]].map(([label,k,color])=><div key={k} className="mb-1 grid grid-cols-[90px_1fr_55px] items-center gap-2 text-xs"><span>{label}</span><div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{backgroundColor:color,width:`${x[k]/max*100}%`}}/></div><strong className="text-right">{x[k].toLocaleString()}</strong></div>)}</div>})}</div>
             </div>
-            <div className="rounded-2xl border border-slate-200 p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-xl font-bold">LC comparison and ranking</h3><label className="text-sm">Sort by <select className="ml-2 rounded-lg border border-slate-200 p-2" value={lcSort} onChange={e=>setLcSort(e.target.value)}>{[["notified","Notified"],["diagnosed","Diagnosed"],["presumptive","Presumptive"],["diagnosticYield","Diagnostic yield"],["notificationRate","Notification rate"],["reporting","Facilities reporting"]].map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label></div><div className="overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="bg-slate-100"><tr>{["LC","LGA","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield","Notification rate"].map(h=><th key={h} className="whitespace-nowrap px-3 py-3">{h}</th>)}</tr></thead><tbody>{lcRows.map(x=><tr key={x.lc} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{x.lc}</td><td className="px-3 py-3">{x.lgas}</td><td className="px-3 py-3">{x.reporting}/{x.assigned}</td>{x.reporting===0?<td colSpan={5} className="px-3 py-3 italic text-slate-500">No report</td>:<><td className="px-3 py-3">{x.presumptive.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosed.toLocaleString()}</td><td className="px-3 py-3">{x.notified.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosticYield===null?"N/A":`${x.diagnosticYield.toFixed(1)}%`}</td><td className="px-3 py-3">{x.notificationRate===null?"N/A":`${x.notificationRate.toFixed(1)}%`}</td></>}</tr>)}</tbody></table></div></div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div><h3 className="text-xl font-bold">LC comparison and target achievement</h3><p className="mt-1 text-xs text-slate-500">Monthly LC targets apply to Spoke contributions only · green ≥100%, amber 80–99.9%, red &lt;80% · facility count does not affect achievement.</p></div>
+                <label className="text-sm">Sort by <select className="ml-2 rounded-lg border border-slate-200 p-2" value={lcSort} onChange={e=>setLcSort(e.target.value)}>{[["notifiedAchievement","Notification target achievement"],["presumptiveAchievement","Presumptive target achievement"],["notified","Notified count"],["presumptive","Presumptive count"],["diagnosed","Diagnosed count"],["diagnosticYield","Diagnostic yield"],["notificationRate","Notification rate"],["reporting","Facilities reporting"]].map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label>
+              </div>
+              {lcTargetMonths === null ? <p className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Select a specific year to calculate target achievement. "All years" has no defined target denominator.</p> : <p className="mb-3 text-sm text-slate-600">Selected target period: <strong>{lcTargetMonths} month{lcTargetMonths===1?"":"s"}</strong>. {dashboardMonth === "All" ? "All months uses January–December, including months without uploaded reports." : "A single month's target applies."} LCs assigned facilities in more than one LGA have their LGA targets added.</p>}
+              <div className="overflow-x-auto"><table className="min-w-full text-left text-sm">
+                <thead className="bg-slate-100"><tr>{["LC","LGA","Facilities reporting","Presumptive","Presumptive target achieved","Diagnosed","Notified","Notification target achieved","Diagnostic yield","Notification rate"].map(h=><th key={h} className="whitespace-nowrap px-3 py-3">{h}</th>)}</tr></thead>
+                <tbody>{lcRows.map(x=><tr key={x.lc} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-3 py-3 font-semibold whitespace-nowrap">{x.lc}</td><td className="px-3 py-3">{x.lgas}</td><td className="px-3 py-3">{x.reporting}/{x.assigned}</td>
+                  <td className="px-3 py-3">{x.reporting ? x.presumptive.toLocaleString() : <span className="italic text-slate-400">No report</span>}</td>
+                  <td className="px-3 py-3"><LcTargetCell actual={x.presumptive} target={x.presumptiveTarget} hasReport={x.reporting>0}/></td>
+                  <td className="px-3 py-3">{x.reporting ? x.diagnosed.toLocaleString() : "—"}</td>
+                  <td className="px-3 py-3">{x.reporting ? x.notified.toLocaleString() : "—"}</td>
+                  <td className="px-3 py-3"><LcTargetCell actual={x.notified} target={x.notifiedTarget} hasReport={x.reporting>0}/></td>
+                  <td className="px-3 py-3">{!x.reporting||x.diagnosticYield===null?"—":`${x.diagnosticYield.toFixed(1)}%`}</td>
+                  <td className="px-3 py-3">{!x.reporting||x.notificationRate===null?"—":`${x.notificationRate.toFixed(1)}%`}</td>
+                </tr>)}</tbody>
+              </table></div>
+            </div>
             {lcUnmatched.length>0&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>{lcUnmatched.length} uploaded FCT facility-month record(s) could not be matched to an LC.</strong><p className="mt-1">Review the facility names in the mapping before treating LC totals as complete.</p><div className="mt-2">{[...new Set(lcUnmatched.map(x=>`${x.lga} — ${x.facility_name}`))].slice(0,20).map(x=><p key={x}>{x}</p>)}</div></div>}
-            <p className="text-xs text-slate-500">Diagnostic yield = diagnosed / evaluated for All contributions, or diagnosed / presumptive for Hub/Spoke (provider-level evaluated is unavailable); notification rate = notified / diagnosed. Rates are reporting-period ratios, not individual patient follow-up. Facility reporting counts indicate uploaded facilities, not formal reporting completeness across months. Rankings are descriptive and not adjusted for caseload or facility mix.</p>
+            <p className="text-xs text-slate-500">Diagnostic yield = diagnosed / evaluated for All contributions, or diagnosed / presumptive for Hub/Spoke (provider-level evaluated is unavailable); notification rate = notified / diagnosed. Rates are reporting-period ratios, not individual patient follow-up. Facility reporting counts indicate uploaded facilities, not formal reporting completeness across months. Target rankings use the selected calendar period and each LC's LGA targets; facility counts do not affect target achievement. No report means missing uploads, not zero activity.</p>
           </section>
         ) : activeView === "dashboard" ? (
 
