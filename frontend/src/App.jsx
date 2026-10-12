@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import facilities from "./data";
+import lcAssignments from "./lcAssignments";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://arfh-fct-upload-portal.onrender.com";
 const PASSWORD_STORAGE_KEY = "arfh_app_password";
@@ -45,6 +46,9 @@ export default function App() {
   const [dashboardYear, setDashboardYear] = useState("2026");
   const [dashboardLga, setDashboardLga] = useState("All");
   const [chartMetric, setChartMetric] = useState("notified");
+  const [lcLga, setLcLga] = useState("All");
+  const [lcSelected, setLcSelected] = useState("All");
+  const [lcSort, setLcSort] = useState("notified");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
 
@@ -342,7 +346,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (isAuthenticated && activeView === "dashboard") fetchPerformance();
+    if (isAuthenticated && (activeView === "dashboard" || activeView === "lc")) fetchPerformance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, activeView, dashboardState, dashboardMonth, dashboardYear]);
 
@@ -432,6 +436,50 @@ export default function App() {
     const w=window.open("","_blank");
     if(!w){setPerformanceError("Allow pop-ups to open the printable PDF report.");return;}
     w.document.open();w.document.write(html);w.document.close();w.focus();w.setTimeout(()=>w.print(),500);
+  };
+
+  // Match on state + LGA + facility to avoid attributing similarly named facilities incorrectly.
+  const normalizeLcKey = (value) => String(value ?? "").normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/&/g, "and")
+    .replace(/[^a-z0-9]/g, "");
+  const lcMapping = useMemo(() => new Map(lcAssignments.map(a => [
+    [a.state, a.lga, a.facility].map(normalizeLcKey).join("|"), a
+  ])), []);
+  const lcLgas = useMemo(() => [...new Set(lcAssignments.map(a => a.lga))].sort(), []);
+  const lcRoster = useMemo(() => {
+    const roster = new Map();
+    lcAssignments.filter(a => lcLga === "All" || a.lga === lcLga).forEach(a => {
+      if (!roster.has(a.lc)) roster.set(a.lc, { lc:a.lc, lgas:new Set(), facilities:new Set(), reported:new Set(), presumptive:0, diagnosed:0, notified:0, screened:0, evaluated:0, months:new Set() });
+      const item = roster.get(a.lc);
+      item.lgas.add(a.lga);
+      item.facilities.add([a.state,a.lga,a.facility].map(normalizeLcKey).join("|"));
+    });
+    performanceRows.filter(r => normalizeLcKey(r.state) === "fct" && (lcLga === "All" || normalizeLcKey(r.lga) === normalizeLcKey(lcLga))).forEach(r => {
+      const key = [r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|");
+      const match = lcMapping.get(key);
+      if (!match || !roster.has(match.lc)) return;
+      const item = roster.get(match.lc);
+      item.reported.add(key);
+      item.months.add(`${r.report_year}-${r.report_month}`);
+      ["presumptive","diagnosed","notified","screened","evaluated"].forEach(k => { item[k] += Number(r.indicators?.totals?.[k]) || 0; });
+    });
+    return [...roster.values()].map(x => ({ ...x, lgas:[...x.lgas].join(", "), assigned:x.facilities.size, reporting:x.reported.size,
+      diagnosticYield:x.evaluated ? x.diagnosed / x.evaluated * 100 : null,
+      notificationRate:x.diagnosed ? x.notified / x.diagnosed * 100 : null
+    }));
+  }, [performanceRows, lcMapping, lcLga]);
+  const lcRows = useMemo(() => lcRoster.filter(x => lcSelected === "All" || x.lc === lcSelected)
+    .sort((a,b) => (b[lcSort] ?? -1) - (a[lcSort] ?? -1) || a.lc.localeCompare(b.lc)), [lcRoster, lcSelected, lcSort]);
+  const lcUnmatched = useMemo(() => performanceRows.filter(r => normalizeLcKey(r.state)==="fct" &&
+    (lcLga === "All" || normalizeLcKey(r.lga)===normalizeLcKey(lcLga)) &&
+    !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [performanceRows,lcLga,lcMapping]);
+  const lcExport = () => {
+    if (!lcRows.length || performanceRows.length >= 1000) return;
+    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield (%)","Notification rate (%)"];
+    const esc = v => `"${String(v ?? "").replace(/^[=+@-]/,"'$&").replace(/"/g,'""')}"`;
+    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.presumptive,x.diagnosed,x.notified,x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A"])];
+    const blob=new Blob(["\uFEFF"+lines.map(r=>r.map(esc).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_Performance_${dashboardYear}_${dashboardMonth}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   };
 
   const dashboardTotals = useMemo(() => {
@@ -661,8 +709,34 @@ export default function App() {
         <div className="mb-5 flex flex-wrap gap-2">
           <button type="button" onClick={() => setActiveView("upload")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "upload" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Upload reports</button>
           <button type="button" onClick={() => setActiveView("dashboard")} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "dashboard" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>Analytics dashboard</button>
+          <button type="button" onClick={() => { setDashboardState("FCT"); setActiveView("lc"); }} className={`rounded-xl px-5 py-2.5 font-semibold ${activeView === "lc" ? "bg-[#165693] text-white" : "bg-white text-slate-700"}`}>LC Performance</button>
         </div>
-        {activeView === "dashboard" ? (
+        {activeView === "lc" ? (
+          <section className="space-y-5 rounded-[28px] bg-white p-5 shadow-sm md:p-7">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Facility-linked presumptive, diagnosed and notified TB cases</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="LGA"><select className={inputClass} value={lcLga} onChange={e=>{setLcLga(e.target.value);setLcSelected("All");}}><option value="All">All FCT LGAs</option>{lcLgas.map(x=><option key={x}>{x}</option>)}</select></Field>
+              <Field label="LC"><select className={inputClass} value={lcSelected} onChange={e=>setLcSelected(e.target.value)}><option value="All">All LCs</option>{lcRoster.map(x=><option key={x.lc} value={x.lc}>{x.lc}</option>)}</select></Field>
+              <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={e=>setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>
+              <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={e=>setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
+            </div>
+            {performanceError && <p className="rounded-xl bg-red-50 p-3 text-red-700">{performanceError}</p>}
+            {performanceRows.length >= 1000 && <p className="rounded-xl bg-amber-50 p-3 text-amber-800">Backend 1,000-record limit reached. Results may be incomplete; narrow month and year before comparing LCs.</p>}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <InfoCard title="LCs in selection" value={lcRows.length}/>
+              <InfoCard title="Assigned facilities" value={lcRows.reduce((n,x)=>n+x.assigned,0)}/>
+              <InfoCard title="Facilities reporting" value={lcRows.reduce((n,x)=>n+x.reporting,0)}/>
+              <InfoCard title="Unmatched facility-month records" value={lcUnmatched.length}/>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold">Presumptive vs Diagnosed vs Notified</h3><p className="text-xs text-slate-500">Each LC's counts are summed across their assigned facilities for the selected period.</p></div><button className={secondaryButtonClass} type="button" disabled={!lcRows.length||performanceRows.length>=1000} onClick={lcExport}>Download LC CSV</button></div>
+              <div className="space-y-4">{lcRows.map(x=>{const max=Math.max(1,...lcRows.map(r=>r.presumptive),...lcRows.map(r=>r.diagnosed),...lcRows.map(r=>r.notified));return <div key={x.lc} className="border-b border-slate-100 pb-3"><div className="mb-2 flex flex-wrap justify-between gap-2 text-sm font-semibold"><span>{x.lc}</span><span className="text-slate-500">{x.reporting}/{x.assigned} facilities reporting</span></div>{x.reporting===0?<p className="text-xs italic text-slate-500">No uploaded report for selected period</p>:[["Presumptive","presumptive","#2563eb"],["Diagnosed","diagnosed","#7c3aed"],["Notified","notified","#059669"]].map(([label,k,color])=><div key={k} className="mb-1 grid grid-cols-[90px_1fr_55px] items-center gap-2 text-xs"><span>{label}</span><div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{backgroundColor:color,width:`${x[k]/max*100}%`}}/></div><strong className="text-right">{x[k].toLocaleString()}</strong></div>)}</div>})}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-xl font-bold">LC comparison and ranking</h3><label className="text-sm">Sort by <select className="ml-2 rounded-lg border border-slate-200 p-2" value={lcSort} onChange={e=>setLcSort(e.target.value)}>{[["notified","Notified"],["diagnosed","Diagnosed"],["presumptive","Presumptive"],["diagnosticYield","Diagnostic yield"],["notificationRate","Notification rate"],["reporting","Facilities reporting"]].map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label></div><div className="overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="bg-slate-100"><tr>{["LC","LGA","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield","Notification rate"].map(h=><th key={h} className="whitespace-nowrap px-3 py-3">{h}</th>)}</tr></thead><tbody>{lcRows.map(x=><tr key={x.lc} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{x.lc}</td><td className="px-3 py-3">{x.lgas}</td><td className="px-3 py-3">{x.reporting}/{x.assigned}</td>{x.reporting===0?<td colSpan={5} className="px-3 py-3 italic text-slate-500">No report</td>:<><td className="px-3 py-3">{x.presumptive.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosed.toLocaleString()}</td><td className="px-3 py-3">{x.notified.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosticYield===null?"N/A":`${x.diagnosticYield.toFixed(1)}%`}</td><td className="px-3 py-3">{x.notificationRate===null?"N/A":`${x.notificationRate.toFixed(1)}%`}</td></>}</tr>)}</tbody></table></div></div>
+            {lcUnmatched.length>0&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>{lcUnmatched.length} uploaded FCT facility-month record(s) could not be matched to an LC.</strong><p className="mt-1">Review the facility names in the mapping before treating LC totals as complete.</p><div className="mt-2">{[...new Set(lcUnmatched.map(x=>`${x.lga} — ${x.facility_name}`))].slice(0,20).map(x=><p key={x}>{x}</p>)}</div></div>}
+            <p className="text-xs text-slate-500">Diagnostic yield = diagnosed / evaluated presumptive; notification rate = notified / diagnosed. Rates are reporting-period ratios, not individual patient follow-up. Facility reporting counts indicate uploaded facilities, not formal reporting completeness across months. Rankings are descriptive and not adjusted for caseload or facility mix.</p>
+          </section>
+        ) : activeView === "dashboard" ? (
+
           <section className="space-y-5 rounded-[28px] bg-white p-5 shadow-sm md:p-7">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><h2 className="text-3xl font-bold text-slate-900">TB Performance Dashboard</h2><p className="mt-1 text-sm text-slate-500">Facility-level records from successful PPM uploads. No estimates or duplicate regimen additions.</p></div>
