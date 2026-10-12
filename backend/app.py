@@ -2103,15 +2103,6 @@ async def preview(
     try:
         temp_path = save_upload_temporarily(file)
 
-        destination = str(upload_destination).strip().lower()
-        if destination not in ("both", "sheets", "database"):
-            raise HTTPException(status_code=422, detail="upload_destination must be both, sheets, or database.")
-        if report_type == PMTCT_REPORT_TYPE and destination != "sheets":
-            raise HTTPException(status_code=422, detail=(
-                "Community PMTCT currently supports Google Sheets only. "
-                "Select Google Sheets; a separate PMTCT database model is required for direct storage."
-            ))
-
         if report_type == PMTCT_REPORT_TYPE:
             selected_state = normalize_state_name(state)
 
@@ -2141,52 +2132,6 @@ async def preview(
                 "range_updates_total": len(pmtct_result["updates"]),
                 "matched_preview": pmtct_result["matched"][:20],
                 "new_rows_preview": pmtct_result["newly_added"][:20],
-                "summary": summary,
-            }
-
-        # Direct-to-database mode does not contact Google at all. It uses the
-        # identical source worksheet and age-band/DRTB validation as Sheets.
-        if destination == "database":
-            selected_state = normalize_state_name(state)
-            actual_target_tab = get_target_tab_from_month(source_month_sheet)
-            source_df = load_source_df(temp_path, source_month_sheet)
-            detailed_age_validation = enforce_detailed_age_validation(source_df)
-            extra_issues = validate_drtb_and_contact(source_df)
-            if extra_issues:
-                raise HTTPException(status_code=422, detail={
-                    "message": "DRTB/Contact Investigation validation failed.",
-                    "issues": extra_issues,
-                })
-            if detailed_age_validation.get("warnings") and not warning_acknowledged:
-                raise HTTPException(status_code=409, detail={
-                    "message": "Notified exceeds Diagnosed in one or more age bands. Confirm the figures before uploading.",
-                    "warning_count": detailed_age_validation.get("warning_count", 0),
-                    "warnings": detailed_age_validation.get("warnings", []),
-                    "requires_confirmation": True,
-                })
-            source_blocks = build_source_blocks(source_df)
-            summary = validation_summary_from_source_blocks(source_blocks)
-            snapshot = build_performance_snapshot(source_blocks)
-            # The audit entry and facility-month upsert commit together.
-            log_upload(
-                facility_name=facility_name, lga=lga, state=selected_state,
-                report_year=report_year, report_month=source_month_sheet,
-                target_tab=actual_target_tab,
-                quarter=get_quarter_from_month(source_month_sheet),
-                workbook_id="", matched_row=0,
-                uploaded_filename=file.filename, updated_cells=0,
-                status="uploaded", message="Saved directly to PostgreSQL; Google Sheets unchanged.",
-                summary=summary, performance_snapshot=snapshot,
-            )
-            return {
-                "status": "uploaded", "upload_destination": "database",
-                "message": "Saved directly to PostgreSQL; Google Sheets unchanged.",
-                "selected_state": selected_state, "target_tab": actual_target_tab,
-                "quarter": get_quarter_from_month(source_month_sheet),
-                "uploaded_filename": file.filename,
-                "google_sheets_status": "not_requested", "database_status": "saved",
-                "performance_snapshot_saved": True,
-                "detailed_age_validation": detailed_age_validation,
                 "summary": summary,
             }
 
@@ -2451,6 +2396,15 @@ async def upload(
     try:
         temp_path = save_upload_temporarily(file)
 
+        destination = str(upload_destination).strip().lower()
+        if destination not in ("both", "sheets", "database"):
+            raise HTTPException(status_code=422, detail="upload_destination must be both, sheets, or database.")
+        if report_type == PMTCT_REPORT_TYPE and destination != "sheets":
+            raise HTTPException(status_code=422, detail=(
+                "Community PMTCT currently supports Google Sheets only. "
+                "Select Google Sheets; a separate PMTCT database model is required for direct storage."
+            ))
+
         if report_type == PMTCT_REPORT_TYPE:
             selected_state = normalize_state_name(state)
 
@@ -2510,6 +2464,52 @@ async def upload(
                 "new_rows_created": len(pmtct_result["newly_added"]),
                 "updated_cells": successful_updates,
                 "skipped_cells": failed_updates,
+                "summary": summary,
+            }
+
+        # Direct-to-database mode does not contact Google at all. It uses the
+        # identical source worksheet and age-band/DRTB validation as Sheets.
+        if destination == "database":
+            selected_state = normalize_state_name(state)
+            actual_target_tab = get_target_tab_from_month(source_month_sheet)
+            source_df = load_source_df(temp_path, source_month_sheet)
+            detailed_age_validation = enforce_detailed_age_validation(source_df)
+            extra_issues = validate_drtb_and_contact(source_df)
+            if extra_issues:
+                raise HTTPException(status_code=422, detail={
+                    "message": "DRTB/Contact Investigation validation failed.",
+                    "issues": extra_issues,
+                })
+            if detailed_age_validation.get("warnings") and not warning_acknowledged:
+                raise HTTPException(status_code=409, detail={
+                    "message": "Notified exceeds Diagnosed in one or more age bands. Confirm the figures before uploading.",
+                    "warning_count": detailed_age_validation.get("warning_count", 0),
+                    "warnings": detailed_age_validation.get("warnings", []),
+                    "requires_confirmation": True,
+                })
+            source_blocks = build_source_blocks(source_df)
+            summary = validation_summary_from_source_blocks(source_blocks)
+            snapshot = build_performance_snapshot(source_blocks)
+            # The audit entry and facility-month upsert commit together.
+            log_upload(
+                facility_name=facility_name, lga=lga, state=selected_state,
+                report_year=report_year, report_month=source_month_sheet,
+                target_tab=actual_target_tab,
+                quarter=get_quarter_from_month(source_month_sheet),
+                workbook_id="", matched_row=0,
+                uploaded_filename=file.filename, updated_cells=0,
+                status="uploaded", message="Saved directly to PostgreSQL; Google Sheets unchanged.",
+                summary=summary, performance_snapshot=snapshot,
+            )
+            return {
+                "status": "uploaded", "upload_destination": "database",
+                "message": "Saved directly to PostgreSQL; Google Sheets unchanged.",
+                "selected_state": selected_state, "target_tab": actual_target_tab,
+                "quarter": get_quarter_from_month(source_month_sheet),
+                "uploaded_filename": file.filename,
+                "google_sheets_status": "not_requested", "database_status": "saved",
+                "performance_snapshot_saved": True,
+                "detailed_age_validation": detailed_age_validation,
                 "summary": summary,
             }
 
