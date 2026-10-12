@@ -76,6 +76,9 @@ export default function App() {
   const [lcLga, setLcLga] = useState("All");
   const [lcSelected, setLcSelected] = useState("All");
   const [lcSort, setLcSort] = useState("notifiedAchievement");
+  const [lcPeriod, setLcPeriod] = useState("Month");
+  const [lcMonth, setLcMonth] = useState("September");
+  const [lcQuarter, setLcQuarter] = useState("Q3");
   const [contributionType, setContributionType] = useState("All");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
@@ -354,7 +357,7 @@ export default function App() {
     try {
       const params = new URLSearchParams();
       if (dashboardState !== "All") params.set("state", dashboardState);
-      if (dashboardMonth !== "All") params.set("report_month", dashboardMonth);
+      if (activeView !== "lc" && dashboardMonth !== "All") params.set("report_month", dashboardMonth);
       if (dashboardYear !== "All") params.set("report_year", dashboardYear);
       const response = await fetch(`${API_BASE_URL}/api/performance?${params}`, { headers: getAuthHeaders() });
       if (response.status === 401) {
@@ -393,7 +396,6 @@ export default function App() {
     const keys = contributionType === "Hub" ? ["facility"] : ["pmv", "community", "lab", "tba"];
     return keys.reduce((sum, key) => sum + providers[key][metric], 0);
   };
-  useEffect(() => { if (activeView === "lc" && contributionType !== "Spoke") setContributionType("Spoke"); }, [activeView, contributionType]);
   const missingProviderRows = useMemo(() => contributionType === "All" ? 0 : performanceRows.filter(r => providerValue(r, "presumptive") === null).length, [performanceRows, contributionType]);
   const providerRows = useMemo(() => performanceRows.filter(r => contributionType === "All" || providerValue(r, "presumptive") !== null).map(r => ({ ...r, indicators: {
     ...r.indicators,
@@ -496,7 +498,16 @@ export default function App() {
   const lcLgas = useMemo(() => [...new Set(lcAssignments.map(a => a.lga))].sort(), []);
   // "All months" means 12 calendar months, even if only one month has uploaded data.
   // With "All years" selected, a denominator is intentionally not inferred.
-  const lcTargetMonths = dashboardYear === "All" ? null : (dashboardMonth === "All" ? 12 : 1);
+  const lcTargetMonths = dashboardYear === "All" ? null : (lcPeriod === "Year" ? 12 : lcPeriod === "Quarter" ? 3 : 1);
+  const lcPeriodLabel = lcPeriod === "Year" ? `Full year ${dashboardYear}` : lcPeriod === "Quarter" ? `${lcQuarter} ${dashboardYear}` : `${lcMonth} ${dashboardYear}`;
+  const lcPeriodRows = useMemo(() => providerRows.filter(r => {
+    const m = String(r.report_month ?? "").trim().toLowerCase();
+    const index = MONTH_OPTIONS.findIndex(name => name.toLowerCase() === m || name.slice(0,3).toLowerCase() === m.slice(0,3));
+    if (index < 0) return false;
+    if (lcPeriod === "Year") return true;
+    if (lcPeriod === "Quarter") return Math.floor(index / 3) + 1 === Number(lcQuarter.slice(1));
+    return MONTH_OPTIONS[index] === lcMonth;
+  }), [providerRows, lcPeriod, lcQuarter, lcMonth]);
   const lcRoster = useMemo(() => {
     const roster = new Map();
     lcAssignments.filter(a => lcLga === "All" || a.lga === lcLga).forEach(a => {
@@ -505,7 +516,7 @@ export default function App() {
       item.lgas.add(a.lga);
       item.facilities.add([a.state,a.lga,a.facility].map(normalizeLcKey).join("|"));
     });
-    providerRows.filter(r => normalizeLcKey(r.state) === "fct" && (lcLga === "All" || normalizeLcKey(r.lga) === normalizeLcKey(lcLga))).forEach(r => {
+    lcPeriodRows.filter(r => normalizeLcKey(r.state) === "fct" && (lcLga === "All" || normalizeLcKey(r.lga) === normalizeLcKey(lcLga))).forEach(r => {
       const key = [r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|");
       const match = lcMapping.get(key);
       if (!match || !roster.has(match.lc)) return;
@@ -521,8 +532,8 @@ export default function App() {
         if (target) { acc.presumptive += target.presumptive; acc.notified += target.notified; }
         return acc;
       }, { presumptive: 0, notified: 0 });
-      const presumptiveTarget = lcTargetMonths === null ? null : monthlyTarget.presumptive * lcTargetMonths;
-      const notifiedTarget = lcTargetMonths === null ? null : monthlyTarget.notified * lcTargetMonths;
+      const presumptiveTarget = lcTargetMonths === null || contributionType !== "Spoke" ? null : monthlyTarget.presumptive * lcTargetMonths;
+      const notifiedTarget = lcTargetMonths === null || contributionType !== "Spoke" ? null : monthlyTarget.notified * lcTargetMonths;
       return { ...x, lgas:[...x.lgas].join(", "), assigned:x.facilities.size, reporting:x.reported.size,
       presumptiveTarget, notifiedTarget,
       presumptiveAchievement: x.reported.size && presumptiveTarget ? x.presumptive / presumptiveTarget * 100 : null,
@@ -530,21 +541,21 @@ export default function App() {
       diagnosticYield:(contributionType === "All" ? x.evaluated : x.presumptive) ? x.diagnosed / (contributionType === "All" ? x.evaluated : x.presumptive) * 100 : null,
       notificationRate:x.diagnosed ? x.notified / x.diagnosed * 100 : null
     }; });
-  }, [providerRows, lcMapping, lcLga, contributionType, lcTargetMonths]);
+  }, [lcPeriodRows, lcMapping, lcLga, contributionType, lcTargetMonths]);
   const lcRows = useMemo(() => lcRoster.filter(x => lcSelected === "All" || x.lc === lcSelected)
     .sort((a,b) => (b[lcSort] ?? -1) - (a[lcSort] ?? -1) ||
       (b.notifiedAchievement ?? -1) - (a.notifiedAchievement ?? -1) ||
       (b.presumptiveAchievement ?? -1) - (a.presumptiveAchievement ?? -1) || a.lc.localeCompare(b.lc)), [lcRoster, lcSelected, lcSort]);
-  const lcUnmatched = useMemo(() => providerRows.filter(r => normalizeLcKey(r.state)==="fct" &&
+  const lcUnmatched = useMemo(() => lcPeriodRows.filter(r => normalizeLcKey(r.state)==="fct" &&
     (lcLga === "All" || normalizeLcKey(r.lga)===normalizeLcKey(lcLga)) &&
-    !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [providerRows,lcLga,lcMapping]);
+    !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [lcPeriodRows,lcLga,lcMapping]);
   const lcExport = () => {
     if (!lcRows.length || performanceRows.length >= 1000) return;
-    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Presumptive target","Presumptive achievement (%)","Diagnosed","Notified","Notified target","Notification target achievement (%)","Diagnostic yield (%)","Notification rate (%)","Contribution","Period months"];
+    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Presumptive target","Presumptive achievement (%)","Diagnosed","Notified","Notified target","Notification target achievement (%)","Diagnostic yield (%)","Notification rate (%)","Contribution","Reporting period","Period months"];
     const esc = v => `"${String(v ?? "").replace(/^[=+@-]/,"'$&").replace(/"/g,'""')}"`;
-    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.reporting ? x.presumptive : "No report",x.presumptiveTarget??"N/A",x.presumptiveAchievement?.toFixed(1)??"N/A",x.reporting ? x.diagnosed : "No report",x.reporting ? x.notified : "No report",x.notifiedTarget??"N/A",x.notifiedAchievement?.toFixed(1)??"N/A",x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A",contributionType,lcTargetMonths??"N/A"])];
+    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.reporting ? x.presumptive : "No report",x.presumptiveTarget??"N/A",x.presumptiveAchievement?.toFixed(1)??"N/A",x.reporting ? x.diagnosed : "No report",x.reporting ? x.notified : "No report",x.notifiedTarget??"N/A",x.notifiedAchievement?.toFixed(1)??"N/A",x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A",contributionType,lcPeriodLabel,lcTargetMonths??"N/A"])];
     const blob=new Blob(["\uFEFF"+lines.map(r=>r.map(esc).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"});
-    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_${contributionType}_${dashboardYear}_${dashboardMonth}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_${contributionType}_${dashboardYear}_${lcPeriod}_${lcPeriod === "Month" ? lcMonth : lcPeriod === "Quarter" ? lcQuarter : "FullYear"}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   };
 
   const dashboardTotals = useMemo(() => {
@@ -778,12 +789,14 @@ export default function App() {
         </div>
         {activeView === "lc" ? (
           <section className="space-y-5 rounded-[28px] bg-white p-5 shadow-sm md:p-7">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Spoke contributions only (PMV, community pharmacy, standalone laboratory and TBA/healer). Facility-based activity belongs to Screening Officers.</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Explore All, Hub or Spoke contributions. Official LC target achievement is calculated for Spoke only; Hub is facility-based activity attributable to Screening Officers.</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="LGA"><select className={inputClass} value={lcLga} onChange={e=>{setLcLga(e.target.value);setLcSelected("All");}}><option value="All">All FCT LGAs</option>{lcLgas.map(x=><option key={x}>{x}</option>)}</select></Field>
-              <Field label="LC contribution basis"><div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-900">Spoke only · PMV, pharmacy, lab, TBA</div></Field>
+              <Field label="LC contribution basis"><select className={inputClass} value={contributionType} onChange={e=>setContributionType(e.target.value)}><option value="Spoke">Spoke · Official LC targets</option><option value="Hub">Hub · Facility-based</option><option value="All">All contributions</option></select></Field>
               <Field label="LC"><select className={inputClass} value={lcSelected} onChange={e=>setLcSelected(e.target.value)}><option value="All">All LCs</option>{lcRoster.map(x=><option key={x.lc} value={x.lc}>{x.lc}</option>)}</select></Field>
-              <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={e=>setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>
+              <Field label="Period"><select className={inputClass} value={lcPeriod} onChange={e=>setLcPeriod(e.target.value)}><option value="Month">Monthly</option><option value="Quarter">Quarterly</option><option value="Year">Yearly</option></select></Field>
+              {lcPeriod === "Month" && <Field label="Month"><select className={inputClass} value={lcMonth} onChange={e=>setLcMonth(e.target.value)}>{MONTH_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>}
+              {lcPeriod === "Quarter" && <Field label="Quarter"><select className={inputClass} value={lcQuarter} onChange={e=>setLcQuarter(e.target.value)}>{["Q1","Q2","Q3","Q4"].map(x=><option key={x}>{x}</option>)}</select></Field>}
               <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={e=>setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
             </div>
             {contributionType !== "All" && <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-900">Hub = facility-based; Spoke = PMV + community pharmacy + standalone lab + TBA/healer. Provider-level evaluated, treatment initiation, HIV and ART are not stored, so these cannot be broken down. Excel and PDF exports remain available for All contributions only; use CSV for Hub/Spoke.</p>}
@@ -796,15 +809,15 @@ export default function App() {
               <InfoCard title="Facilities reporting" value={lcRows.reduce((n,x)=>n+x.reporting,0)}/>
               <InfoCard title="Unmatched facility-month records" value={lcUnmatched.length}/>
             </div>
-            <div className="rounded-2xl border border-slate-200 p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold">Presumptive vs Diagnosed vs Notified</h3><p className="text-xs text-slate-500">Only Spoke contributions are summed across each LC's assigned facilities for the selected period. Facility-based contributions are excluded.</p></div><button className={secondaryButtonClass} type="button" disabled={!lcRows.length||performanceRows.length>=1000} onClick={lcExport}>Download LC CSV</button></div>
+            <div className="rounded-2xl border border-slate-200 p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold">Presumptive vs Diagnosed vs Notified</h3><p className="text-xs text-slate-500">{contributionType} contributions across each LC's assigned facilities for {lcPeriodLabel}. Official LC targets apply to Spoke only.</p></div><button className={secondaryButtonClass} type="button" disabled={!lcRows.length||performanceRows.length>=1000} onClick={lcExport}>Download LC CSV</button></div>
               <div className="space-y-4">{lcRows.map(x=>{const max=Math.max(1,...lcRows.map(r=>r.presumptive),...lcRows.map(r=>r.diagnosed),...lcRows.map(r=>r.notified));return <div key={x.lc} className="border-b border-slate-100 pb-3"><div className="mb-2 flex flex-wrap justify-between gap-2 text-sm font-semibold"><span>{x.lc}</span><span className="text-slate-500">{x.reporting}/{x.assigned} facilities reporting</span></div>{x.reporting===0?<p className="text-xs italic text-slate-500">No uploaded report for selected period</p>:[["Presumptive","presumptive","#2563eb"],["Diagnosed","diagnosed","#7c3aed"],["Notified","notified","#059669"]].map(([label,k,color])=><div key={k} className="mb-1 grid grid-cols-[90px_1fr_55px] items-center gap-2 text-xs"><span>{label}</span><div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{backgroundColor:color,width:`${x[k]/max*100}%`}}/></div><strong className="text-right">{x[k].toLocaleString()}</strong></div>)}</div>})}</div>
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div><h3 className="text-xl font-bold">LC comparison and target achievement</h3><p className="mt-1 text-xs text-slate-500">Monthly LC targets apply to Spoke contributions only · green ≥100%, amber 80–99.9%, red &lt;80% · facility count does not affect achievement.</p></div>
+                <div><h3 className="text-xl font-bold">LC comparison and target achievement</h3><p className="mt-1 text-xs text-slate-500">Official monthly LC targets apply to Spoke only · green ≥100%, amber 80–99.9%, red &lt;80% · facility count does not affect achievement.</p></div>
                 <label className="text-sm">Sort by <select className="ml-2 rounded-lg border border-slate-200 p-2" value={lcSort} onChange={e=>setLcSort(e.target.value)}>{[["notifiedAchievement","Notification target achievement"],["presumptiveAchievement","Presumptive target achievement"],["notified","Notified count"],["presumptive","Presumptive count"],["diagnosed","Diagnosed count"],["diagnosticYield","Diagnostic yield"],["notificationRate","Notification rate"],["reporting","Facilities reporting"]].map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label>
               </div>
-              {lcTargetMonths === null ? <p className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Select a specific year to calculate target achievement. "All years" has no defined target denominator.</p> : <p className="mb-3 text-sm text-slate-600">Selected target period: <strong>{lcTargetMonths} month{lcTargetMonths===1?"":"s"}</strong>. {dashboardMonth === "All" ? "All months uses January–December, including months without uploaded reports." : "A single month's target applies."} LCs assigned facilities in more than one LGA have their LGA targets added.</p>}
+              {contributionType !== "Spoke" ? <p className="mb-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-900">Viewing {contributionType} contributions for {lcPeriodLabel}. Official LC target achievement is not scored for this contribution basis; select Spoke to see target percentages.</p> : lcTargetMonths === null ? <p className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Select a specific year to calculate target achievement.</p> : <p className="mb-3 text-sm text-slate-600">Selected period: <strong>{lcPeriodLabel}</strong> · target denominator: <strong>{lcTargetMonths} month{lcTargetMonths===1?"":"s"}</strong>, including months without uploaded reports. LGA targets are assigned per LC, regardless of facility count.</p>}
               <div className="overflow-x-auto"><table className="min-w-full text-left text-sm">
                 <thead className="bg-slate-100"><tr>{["LC","LGA","Facilities reporting","Presumptive","Presumptive target achieved","Diagnosed","Notified","Notification target achieved","Diagnostic yield","Notification rate"].map(h=><th key={h} className="whitespace-nowrap px-3 py-3">{h}</th>)}</tr></thead>
                 <tbody>{lcRows.map(x=><tr key={x.lc} className="border-b border-slate-100 hover:bg-slate-50">
