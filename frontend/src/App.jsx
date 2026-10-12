@@ -54,6 +54,7 @@ export default function App() {
   const [year, setYear] = useState("2026");
   const [month, setMonth] = useState("March");
   const [reportType, setReportType] = useState(REPORT_TYPES.PPM);
+  const [uploadDestination, setUploadDestination] = useState("both");
   const [file, setFile] = useState(null);
 
   const [loadingAction, setLoadingAction] = useState("");
@@ -82,6 +83,7 @@ export default function App() {
   const [contributionType, setContributionType] = useState("All");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
+  const effectiveUploadDestination = isPmtct ? "sheets" : uploadDestination;
 
   const stateOptions = useMemo(() => Object.keys(facilities), []);
   const lgaOptions = useMemo(
@@ -126,7 +128,7 @@ export default function App() {
     setUploadData(null);
     setErrorMessage("");
     setSuccessMessage("");
-  }, [reportType, month, year, stateValue, lga, facility]);
+  }, [reportType, month, year, stateValue, lga, facility, effectiveUploadDestination]);
 
   const validationPassed = validationData?.status === "passed";
 
@@ -196,6 +198,7 @@ export default function App() {
     source_month_sheet: month,
     target_tab: month,
     report_type: reportType,
+    upload_destination: effectiveUploadDestination,
     spreadsheet_name: isPmtct
       ? "Community PMTCT reporting template"
       : `${stateValue} PPM Indicator reporting template`,
@@ -213,6 +216,7 @@ export default function App() {
       a.report_year === b.report_year &&
       a.source_month_sheet === b.source_month_sheet &&
       a.report_type === b.report_type &&
+      a.upload_destination === b.upload_destination &&
       a.file_name === b.file_name &&
       a.file_size === b.file_size &&
       a.file_last_modified === b.file_last_modified
@@ -231,6 +235,7 @@ export default function App() {
     formData.append("source_month_sheet", context.source_month_sheet);
     formData.append("target_tab", context.target_tab);
     formData.append("report_type", context.report_type);
+    formData.append("upload_destination", context.upload_destination);
     formData.append("spreadsheet_name", context.spreadsheet_name);
     formData.append(
       "warning_acknowledged",
@@ -684,7 +689,7 @@ export default function App() {
       }
 
       const confirmed = window.confirm(
-        `Proceed with upload?\n\nReport: ${requestContext.report_type}\nState: ${requestContext.state}\nLGA: ${requestContext.lga}\nFacility/Workflow: ${requestContext.facility_name}\nMonth: ${requestContext.source_month_sheet}\nYear: ${requestContext.report_year}\nTarget tab: ${previewData?.target_tab || requestContext.target_tab}`
+        `Proceed with upload?\n\nReport: ${requestContext.report_type}\nState: ${requestContext.state}\nLGA: ${requestContext.lga}\nFacility/Workflow: ${requestContext.facility_name}\nMonth: ${requestContext.source_month_sheet}\nYear: ${requestContext.report_year}\nDestination: ${requestContext.upload_destination === "both" ? "Google Sheets + PostgreSQL" : requestContext.upload_destination === "database" ? "PostgreSQL only" : "Google Sheets only"}\nTarget tab: ${previewData?.target_tab || requestContext.target_tab}`
       );
 
       if (!confirmed) return;
@@ -944,6 +949,24 @@ export default function App() {
                     <option value={REPORT_TYPES.PPM}>PPM ETL Upload</option>
                     <option value={REPORT_TYPES.PMTCT}>Community PMTCT Upload</option>
                   </select>
+                </Field>
+
+                <Field label="Upload destination">
+                  <select
+                    value={effectiveUploadDestination}
+                    disabled={isPmtct}
+                    onChange={(e) => { setUploadDestination(e.target.value); clearWorkflowState(); }}
+                    className={inputClass}
+                  >
+                    <option value="both">Both — Google Sheets + PostgreSQL</option>
+                    <option value="sheets">Google Sheets only</option>
+                    <option value="database">PostgreSQL only</option>
+                  </select>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {isPmtct
+                      ? "Community PMTCT currently supports Google Sheets only."
+                      : "Both is the default. PostgreSQL-only uploads do not update Google Sheets. Changing destination requires revalidation."}
+                  </p>
                 </Field>
 
                 <Field label="State">
