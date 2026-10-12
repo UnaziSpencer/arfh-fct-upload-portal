@@ -49,6 +49,7 @@ export default function App() {
   const [lcLga, setLcLga] = useState("All");
   const [lcSelected, setLcSelected] = useState("All");
   const [lcSort, setLcSort] = useState("notified");
+  const [contributionType, setContributionType] = useState("All");
 
   const isPmtct = reportType === REPORT_TYPES.PMTCT;
 
@@ -352,8 +353,27 @@ export default function App() {
 
   useEffect(() => { setDashboardLga("All"); }, [dashboardState, dashboardMonth, dashboardYear]);
   const dashboardLgas = useMemo(() => [...new Set(performanceRows.map((r) => r.lga).filter(Boolean))].sort(), [performanceRows]);
-  const visibleRows = useMemo(() => performanceRows.filter((r) => dashboardLga === "All" || r.lga === dashboardLga), [performanceRows, dashboardLga]);
+  // Provider breakdown in stored schema v1: facility is Hub; pmv/community/lab/tba are Spokes.
+  // Evaluated, treatment started, HIV and ART are only stored as facility-level totals,
+  // so never present them as provider-specific figures.
+  const PROVIDER_KEYS = ["facility", "pmv", "community", "lab", "tba"];
+  const PROVIDER_METRICS = ["attendance", "screened", "presumptive", "diagnosed", "notified", "drtb_presumptive", "drtb_notified", "drtb_started"];
+  const providerValue = (row, metric) => {
+    if (contributionType === "All") return Number(row.indicators?.totals?.[metric]) || 0;
+    if (!PROVIDER_METRICS.includes(metric)) return null;
+    const providers = row.indicators?.by_provider;
+    if (!providers || !PROVIDER_KEYS.every(k => providers[k] && typeof providers[k][metric] === "number")) return null;
+    const keys = contributionType === "Hub" ? ["facility"] : ["pmv", "community", "lab", "tba"];
+    return keys.reduce((sum, key) => sum + providers[key][metric], 0);
+  };
+  const missingProviderRows = useMemo(() => contributionType === "All" ? 0 : performanceRows.filter(r => providerValue(r, "presumptive") === null).length, [performanceRows, contributionType]);
+  const providerRows = useMemo(() => performanceRows.filter(r => contributionType === "All" || providerValue(r, "presumptive") !== null).map(r => ({ ...r, indicators: {
+    ...r.indicators,
+    totals: contributionType === "All" ? r.indicators?.totals : Object.fromEntries(PROVIDER_METRICS.map(k => [k, providerValue(r, k)]))
+  }})), [performanceRows, contributionType]);
+  const visibleRows = useMemo(() => providerRows.filter((r) => dashboardLga === "All" || r.lga === dashboardLga), [providerRows, dashboardLga]);
   const monthOrder = MONTH_OPTIONS;
+  useEffect(() => { if (contributionType !== "All" && chartMetric === "treatment_started") setChartMetric("notified"); }, [contributionType, chartMetric]);
   const monthlySeries = useMemo(() => monthOrder.map((month) => ({
     month: month.slice(0, 3),
     count: visibleRows.filter((r) => r.report_month === month || r.report_month === month.slice(0, 3))
@@ -361,14 +381,14 @@ export default function App() {
   })), [visibleRows, chartMetric]);
   const exportCsv = () => {
     if (!visibleRows.length || performanceRows.length >= 1000) return;
-    const keys = ["attendance", "screened", "presumptive", "evaluated", "diagnosed", "notified", "treatment_started", "hiv_positive", "art", "cpt", "drtb_presumptive", "drtb_evaluated_xpert", "drtb_notified", "drtb_started"];
-    const header = ["State", "LGA", "Facility", "Year", "Month", ...keys];
+    const keys = contributionType === "All" ? ["attendance", "screened", "presumptive", "evaluated", "diagnosed", "notified", "treatment_started", "hiv_positive", "art", "cpt", "drtb_presumptive", "drtb_evaluated_xpert", "drtb_notified", "drtb_started"] : PROVIDER_METRICS;
+    const header = ["State", "LGA", "Facility", "Year", "Month", "Contribution", ...keys];
     const escapeCsv = (v) => `"${String(v ?? "").replace(/^[=+@-]/, "'$&").replace(/"/g, '""')}"`;
-    const lines = [header, ...visibleRows.map((r) => [r.state, r.lga, r.facility_name, r.report_year, r.report_month, ...keys.map((k) => Number(r.indicators?.totals?.[k]) || 0)])];
+    const lines = [header, ...visibleRows.map((r) => [r.state, r.lga, r.facility_name, r.report_year, r.report_month, contributionType, ...keys.map((k) => Number(r.indicators?.totals?.[k]) || 0)])];
     const csv = "\uFEFF" + lines.map((line) => line.map(escapeCsv).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a"); a.href = url;
-    a.download = `ARFH_TB_${dashboardState}_${dashboardLga}_${dashboardMonth}_${dashboardYear}.csv`.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    a.download = `ARFH_TB_${contributionType}_${dashboardState}_${dashboardLga}_${dashboardMonth}_${dashboardYear}.csv`.replace(/[^a-zA-Z0-9_.-]/g, "_");
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
   const exportExcel = () => {
@@ -454,32 +474,33 @@ export default function App() {
       item.lgas.add(a.lga);
       item.facilities.add([a.state,a.lga,a.facility].map(normalizeLcKey).join("|"));
     });
-    performanceRows.filter(r => normalizeLcKey(r.state) === "fct" && (lcLga === "All" || normalizeLcKey(r.lga) === normalizeLcKey(lcLga))).forEach(r => {
+    providerRows.filter(r => normalizeLcKey(r.state) === "fct" && (lcLga === "All" || normalizeLcKey(r.lga) === normalizeLcKey(lcLga))).forEach(r => {
       const key = [r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|");
       const match = lcMapping.get(key);
       if (!match || !roster.has(match.lc)) return;
       const item = roster.get(match.lc);
+      if (contributionType !== "All" && r.indicators?.totals?.presumptive == null) return;
       item.reported.add(key);
       item.months.add(`${r.report_year}-${r.report_month}`);
       ["presumptive","diagnosed","notified","screened","evaluated"].forEach(k => { item[k] += Number(r.indicators?.totals?.[k]) || 0; });
     });
     return [...roster.values()].map(x => ({ ...x, lgas:[...x.lgas].join(", "), assigned:x.facilities.size, reporting:x.reported.size,
-      diagnosticYield:x.evaluated ? x.diagnosed / x.evaluated * 100 : null,
+      diagnosticYield:(contributionType === "All" ? x.evaluated : x.presumptive) ? x.diagnosed / (contributionType === "All" ? x.evaluated : x.presumptive) * 100 : null,
       notificationRate:x.diagnosed ? x.notified / x.diagnosed * 100 : null
     }));
-  }, [performanceRows, lcMapping, lcLga]);
+  }, [providerRows, lcMapping, lcLga, contributionType]);
   const lcRows = useMemo(() => lcRoster.filter(x => lcSelected === "All" || x.lc === lcSelected)
     .sort((a,b) => (b[lcSort] ?? -1) - (a[lcSort] ?? -1) || a.lc.localeCompare(b.lc)), [lcRoster, lcSelected, lcSort]);
-  const lcUnmatched = useMemo(() => performanceRows.filter(r => normalizeLcKey(r.state)==="fct" &&
+  const lcUnmatched = useMemo(() => providerRows.filter(r => normalizeLcKey(r.state)==="fct" &&
     (lcLga === "All" || normalizeLcKey(r.lga)===normalizeLcKey(lcLga)) &&
-    !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [performanceRows,lcLga,lcMapping]);
+    !lcMapping.has([r.state,r.lga,r.facility_name].map(normalizeLcKey).join("|"))), [providerRows,lcLga,lcMapping]);
   const lcExport = () => {
     if (!lcRows.length || performanceRows.length >= 1000) return;
-    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield (%)","Notification rate (%)"];
+    const header=["LC","LGA","Assigned facilities","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield (%)","Notification rate (%)","Contribution"];
     const esc = v => `"${String(v ?? "").replace(/^[=+@-]/,"'$&").replace(/"/g,'""')}"`;
-    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.presumptive,x.diagnosed,x.notified,x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A"])];
+    const lines=[header,...lcRows.map(x=>[x.lc,x.lgas,x.assigned,x.reporting,x.presumptive,x.diagnosed,x.notified,x.diagnosticYield?.toFixed(1)??"N/A",x.notificationRate?.toFixed(1)??"N/A",contributionType])];
     const blob=new Blob(["\uFEFF"+lines.map(r=>r.map(esc).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"});
-    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_Performance_${dashboardYear}_${dashboardMonth}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`ARFH_FCT_LC_${contributionType}_${dashboardYear}_${dashboardMonth}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   };
 
   const dashboardTotals = useMemo(() => {
@@ -716,10 +737,13 @@ export default function App() {
             <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-3xl font-bold text-slate-900">LC Performance Analysis</h2><p className="text-sm text-slate-500">FCT pilot · Facility-linked presumptive, diagnosed and notified TB cases</p></div><button type="button" onClick={fetchPerformance} className={secondaryButtonClass} disabled={performanceLoading}>{performanceLoading?"Loading…":"Refresh data"}</button></div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="LGA"><select className={inputClass} value={lcLga} onChange={e=>{setLcLga(e.target.value);setLcSelected("All");}}><option value="All">All FCT LGAs</option>{lcLgas.map(x=><option key={x}>{x}</option>)}</select></Field>
+              <Field label="Contribution"><select className={inputClass} value={contributionType} onChange={e=>setContributionType(e.target.value)}><option value="All">All contributions</option><option value="Hub">Hub · Facility-based</option><option value="Spoke">Spokes · PMV, pharmacy, lab, TBA</option></select></Field>
               <Field label="LC"><select className={inputClass} value={lcSelected} onChange={e=>setLcSelected(e.target.value)}><option value="All">All LCs</option>{lcRoster.map(x=><option key={x.lc} value={x.lc}>{x.lc}</option>)}</select></Field>
               <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={e=>setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>
               <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={e=>setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
             </div>
+            {contributionType !== "All" && <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-900">Hub = facility-based; Spoke = PMV + community pharmacy + standalone lab + TBA/healer. Provider-level evaluated, treatment initiation, HIV and ART are not stored, so these cannot be broken down. Excel and PDF exports remain available for All contributions only; use CSV for Hub/Spoke.</p>}
+            {missingProviderRows > 0 && contributionType !== "All" && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{missingProviderRows} records lack a complete provider breakdown and are excluded from provider-specific totals. Do not use these figures as complete programme totals.</p>}
             {performanceError && <p className="rounded-xl bg-red-50 p-3 text-red-700">{performanceError}</p>}
             {performanceRows.length >= 1000 && <p className="rounded-xl bg-amber-50 p-3 text-amber-800">Backend 1,000-record limit reached. Results may be incomplete; narrow month and year before comparing LCs.</p>}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -733,7 +757,7 @@ export default function App() {
             </div>
             <div className="rounded-2xl border border-slate-200 p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-xl font-bold">LC comparison and ranking</h3><label className="text-sm">Sort by <select className="ml-2 rounded-lg border border-slate-200 p-2" value={lcSort} onChange={e=>setLcSort(e.target.value)}>{[["notified","Notified"],["diagnosed","Diagnosed"],["presumptive","Presumptive"],["diagnosticYield","Diagnostic yield"],["notificationRate","Notification rate"],["reporting","Facilities reporting"]].map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label></div><div className="overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="bg-slate-100"><tr>{["LC","LGA","Facilities reporting","Presumptive","Diagnosed","Notified","Diagnostic yield","Notification rate"].map(h=><th key={h} className="whitespace-nowrap px-3 py-3">{h}</th>)}</tr></thead><tbody>{lcRows.map(x=><tr key={x.lc} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{x.lc}</td><td className="px-3 py-3">{x.lgas}</td><td className="px-3 py-3">{x.reporting}/{x.assigned}</td>{x.reporting===0?<td colSpan={5} className="px-3 py-3 italic text-slate-500">No report</td>:<><td className="px-3 py-3">{x.presumptive.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosed.toLocaleString()}</td><td className="px-3 py-3">{x.notified.toLocaleString()}</td><td className="px-3 py-3">{x.diagnosticYield===null?"N/A":`${x.diagnosticYield.toFixed(1)}%`}</td><td className="px-3 py-3">{x.notificationRate===null?"N/A":`${x.notificationRate.toFixed(1)}%`}</td></>}</tr>)}</tbody></table></div></div>
             {lcUnmatched.length>0&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>{lcUnmatched.length} uploaded FCT facility-month record(s) could not be matched to an LC.</strong><p className="mt-1">Review the facility names in the mapping before treating LC totals as complete.</p><div className="mt-2">{[...new Set(lcUnmatched.map(x=>`${x.lga} — ${x.facility_name}`))].slice(0,20).map(x=><p key={x}>{x}</p>)}</div></div>}
-            <p className="text-xs text-slate-500">Diagnostic yield = diagnosed / evaluated presumptive; notification rate = notified / diagnosed. Rates are reporting-period ratios, not individual patient follow-up. Facility reporting counts indicate uploaded facilities, not formal reporting completeness across months. Rankings are descriptive and not adjusted for caseload or facility mix.</p>
+            <p className="text-xs text-slate-500">Diagnostic yield = diagnosed / evaluated for All contributions, or diagnosed / presumptive for Hub/Spoke (provider-level evaluated is unavailable); notification rate = notified / diagnosed. Rates are reporting-period ratios, not individual patient follow-up. Facility reporting counts indicate uploaded facilities, not formal reporting completeness across months. Rankings are descriptive and not adjusted for caseload or facility mix.</p>
           </section>
         ) : activeView === "dashboard" ? (
 
@@ -743,6 +767,7 @@ export default function App() {
               <button type="button" onClick={fetchPerformance} disabled={performanceLoading} className={secondaryButtonClass}>{performanceLoading ? "Loading…" : "Refresh data"}</button>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
+              <Field label="Contribution"><select className={inputClass} value={contributionType} onChange={e=>setContributionType(e.target.value)}><option value="All">All contributions</option><option value="Hub">Hub · Facility-based</option><option value="Spoke">Spokes · PMV, pharmacy, lab, TBA</option></select></Field>
               <Field label="State"><select className={inputClass} value={dashboardState} onChange={(e) => setDashboardState(e.target.value)}><option value="All">All states</option>{stateOptions.map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
               <Field label="Month"><select className={inputClass} value={dashboardMonth} onChange={(e) => setDashboardMonth(e.target.value)}><option value="All">All months</option>{MONTH_OPTIONS.map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
               <Field label="Year"><select className={inputClass} value={dashboardYear} onChange={(e) => setDashboardYear(e.target.value)}><option value="All">All years</option><option value="2026">2026</option></select></Field>
@@ -751,15 +776,17 @@ export default function App() {
               <label className="text-sm font-semibold text-slate-700">LGA</label>
               <select className="rounded-xl border border-slate-200 bg-white px-4 py-2" value={dashboardLga} onChange={(e) => setDashboardLga(e.target.value)}><option value="All">All LGAs</option>{dashboardLgas.map((name) => <option key={name} value={name}>{name}</option>)}</select>
               <div className="ml-auto flex flex-wrap gap-2">
-                <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportExcel} className={secondaryButtonClass}>Download Excel (.xlsx)</button>
+                <button type="button" disabled={contributionType !== "All" || !visibleRows.length || performanceRows.length >= 1000} onClick={exportExcel} className={secondaryButtonClass}>Download Excel (.xlsx)</button>
                 <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportCsv} className={secondaryButtonClass}>Download CSV</button>
-                <button type="button" disabled={!visibleRows.length || performanceRows.length >= 1000} onClick={exportPdf} className={primaryButtonClass}>Print / Save PDF</button>
+                <button type="button" disabled={contributionType !== "All" || !visibleRows.length || performanceRows.length >= 1000} onClick={exportPdf} className={primaryButtonClass}>Print / Save PDF</button>
               </div>
             </div>
+            {contributionType !== "All" && <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-900">Hub = facility-based; Spoke = PMV + community pharmacy + standalone lab + TBA/healer. Provider-level evaluated, treatment initiation, HIV and ART are not stored, so these cannot be broken down. Excel and PDF exports remain available for All contributions only; use CSV for Hub/Spoke.</p>}
+            {missingProviderRows > 0 && contributionType !== "All" && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{missingProviderRows} records lack a complete provider breakdown and are excluded from provider-specific totals. Do not use these figures as complete programme totals.</p>}
             {performanceError && <p className="rounded-xl bg-red-50 p-3 text-red-700">{performanceError}</p>}
             <p className="text-sm text-slate-500">{visibleRows.length} matching facility-month records ({performanceRows.length} fetched){performanceRows.length === 1000 ? " (backend limit reached: totals may be incomplete; narrow filters)" : ""}. Each facility may appear in multiple months.</p>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified (DS-TB)", "notified"], ["Treatment started (DS-TB)", "treatment_started"], ["HIV positive", "hiv_positive"], ["On ART", "art"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}
+              {(contributionType === "All" ? [["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified (DS-TB)", "notified"], ["Treatment started (DS-TB)", "treatment_started"], ["HIV positive", "hiv_positive"], ["On ART", "art"]] : [["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Notified (DS-TB)", "notified"]]).map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}
             </div>
             <div className="rounded-2xl border border-slate-200 p-5">
               <div className="mb-4">
@@ -769,9 +796,9 @@ export default function App() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {[
                   ["Presumptive yield", "presumptive", "screened", "#2563eb"],
-                  ["Evaluation coverage", "evaluated", "presumptive", "#059669"],
-                  ["Diagnostic yield", "diagnosed", "evaluated", "#7c3aed"],
-                  ["Treatment initiation", "treatment_started", "notified", "#0891b2"],
+                  ...(contributionType === "All" ? [["Evaluation coverage", "evaluated", "presumptive", "#059669"]] : []),
+                  [contributionType === "All" ? "Diagnostic yield" : "Diagnosed / presumptive", "diagnosed", contributionType === "All" ? "evaluated" : "presumptive", "#7c3aed"],
+                  ...(contributionType === "All" ? [["Treatment initiation", "treatment_started", "notified", "#0891b2"]] : []),
                 ].map(([label, numeratorKey, denominatorKey, barColor]) => {
                   const numerator = dashboardTotals[numeratorKey];
                   const denominator = dashboardTotals[denominatorKey];
@@ -792,16 +819,16 @@ export default function App() {
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
               <h3 className="mb-4 text-xl font-bold">TB service cascade</h3>
-              {[["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified", "notified"], ["Treatment started", "treatment_started"]].map(([label, key]) => (
+              {(contributionType === "All" ? [["Screened", "screened"], ["Presumptive", "presumptive"], ["Evaluated", "evaluated"], ["Diagnosed", "diagnosed"], ["Notified", "notified"], ["Treatment started", "treatment_started"]] : [["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Notified", "notified"]]).map(([label, key]) => (
                 <div key={key} className="mb-3 grid grid-cols-[110px_1fr_65px] items-center gap-3 text-sm"><span>{label}</span><div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#165693]" style={{width: `${dashboardTotals.screened > 0 ? Math.min(100, dashboardTotals[key] / dashboardTotals.screened * 100) : 0}%`}} /></div><strong className="text-right">{dashboardTotals[key].toLocaleString()}</strong></div>
               ))}
             </div>
             <div className="rounded-2xl border border-slate-200 p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold text-slate-900">Monthly reporting trends</h3><p className="text-sm text-slate-500">Hover over a bar for its value. Months without uploaded records are marked as missing.</p></div><select aria-label="Trend indicator" className="rounded-xl border border-slate-200 px-4 py-2" value={chartMetric} onChange={(e) => setChartMetric(e.target.value)}>{[["Notified", "notified"], ["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Treatment started", "treatment_started"], ["DRTB notified", "drtb_notified"]].map(([label,key])=><option key={key} value={key}>{label}</option>)}</select></div>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-bold text-slate-900">Monthly reporting trends</h3><p className="text-sm text-slate-500">Hover over a bar for its value. Months without uploaded records are marked as missing.</p></div><select aria-label="Trend indicator" className="rounded-xl border border-slate-200 px-4 py-2" value={chartMetric} onChange={(e) => setChartMetric(e.target.value)}>{(contributionType === "All" ? [["Notified", "notified"], ["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["Treatment started", "treatment_started"], ["DRTB notified", "drtb_notified"]] : [["Notified", "notified"], ["Screened", "screened"], ["Presumptive", "presumptive"], ["Diagnosed", "diagnosed"], ["DRTB notified", "drtb_notified"]]).map(([label,key])=><option key={key} value={key}>{label}</option>)}</select></div>
               <div className="flex h-56 items-end gap-2 border-b border-slate-200 pb-1">{monthlySeries.map((point,i)=>{const max=Math.max(1,...monthlySeries.map(p=>p.count));const reported=visibleRows.some(r=>r.report_month===MONTH_OPTIONS[i]||r.report_month===point.month);return <div key={i} className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1" title={`${point.month}: ${reported ? point.count.toLocaleString() : "No uploaded report"}`}><span className="text-xs font-semibold text-slate-700 opacity-0 transition group-hover:opacity-100">{reported ? point.count.toLocaleString() : "No data"}</span><div className="w-full max-w-16 rounded-t-lg bg-[#165693] transition hover:bg-sky-500" style={{height:`${reported ? Math.max(point.count?5:1,point.count/max*88) : 0}%`}} role="img" aria-label={`${point.month}: ${reported ? point.count : "No report"}`} /><span className="text-[11px] text-slate-500">{point.month}</span></div>})}</div>
               <p className="mt-3 text-xs text-slate-500">Data represents uploaded facility-month records, not projected activity.</p>
             </div>
-            <div><h3 className="mb-3 text-xl font-bold">Drug-resistant TB</h3><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{[["DRTB presumptive", "drtb_presumptive"], ["DRTB evaluated by Xpert", "drtb_evaluated_xpert"], ["RR/MDR-TB notified", "drtb_notified"], ["RR/MDR-TB started", "drtb_started"]].map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}</div></div>
+            <div><h3 className="mb-3 text-xl font-bold">Drug-resistant TB</h3><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{(contributionType === "All" ? [["DRTB presumptive", "drtb_presumptive"], ["DRTB evaluated by Xpert", "drtb_evaluated_xpert"], ["RR/MDR-TB notified", "drtb_notified"], ["RR/MDR-TB started", "drtb_started"]] : [["DRTB presumptive", "drtb_presumptive"], ["RR/MDR-TB notified", "drtb_notified"], ["RR/MDR-TB started", "drtb_started"]]).map(([label, key]) => <InfoCard key={key} title={label} value={dashboardTotals[key].toLocaleString()} />)}</div></div>
             <div><h3 className="mb-3 text-xl font-bold">Facility performance</h3><div className="overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="bg-slate-100"><tr>{["State", "LGA", "Facility", "Month", "Screened", "Diagnosed", "Notified", "DRTB notified"].map((x) => <th key={x} className="whitespace-nowrap px-3 py-3">{x}</th>)}</tr></thead><tbody>{visibleRows.map((r, i) => <tr key={`${r.state}-${r.lga}-${r.facility_name}-${r.report_year}-${r.report_month}-${i}`} className="border-b border-slate-100"><td className="px-3 py-2">{r.state}</td><td className="px-3 py-2">{r.lga}</td><td className="px-3 py-2">{r.facility_name}</td><td className="px-3 py-2">{r.report_month} {r.report_year}</td>{["screened", "diagnosed", "notified", "drtb_notified"].map((key) => <td key={key} className="px-3 py-2">{Number(r.indicators?.totals?.[key] || 0).toLocaleString()}</td>)}</tr>)}</tbody></table>{!visibleRows.length && !performanceLoading && <p className="p-4 text-slate-500">No performance records found for the selected filters.</p>}</div></div>
           </section>
         ) : (
