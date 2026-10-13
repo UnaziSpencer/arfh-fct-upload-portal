@@ -399,7 +399,12 @@ export default function App() {
     const providers = row.indicators?.by_provider;
     if (!providers || !PROVIDER_KEYS.every(k => providers[k] && typeof providers[k][metric] === "number")) return null;
     const keys = contributionType === "Hub" ? ["facility"] : ["pmv", "community", "lab", "tba"];
-    return keys.reduce((sum, key) => sum + providers[key][metric], 0);
+    const providerTotal = keys.reduce((sum, key) => sum + providers[key][metric], 0);
+    // Spoke referrals out are included in notified, but not attributed to a specific provider.
+    if (contributionType === "Spoke" && metric === "notified") {
+      return providerTotal + (Number(row.indicators?.totals?.referred_public_other) || 0);
+    }
+    return providerTotal;
   };
   const missingProviderRows = useMemo(() => contributionType === "All" ? 0 : performanceRows.filter(r => providerValue(r, "presumptive") === null).length, [performanceRows, contributionType]);
   const providerRows = useMemo(() => performanceRows.filter(r => contributionType === "All" || providerValue(r, "presumptive") !== null).map(r => ({ ...r, indicators: {
