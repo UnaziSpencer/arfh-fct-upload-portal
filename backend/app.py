@@ -1942,7 +1942,7 @@ def build_performance_snapshot(source_blocks: Dict[str, Any]) -> Dict[str, Any]:
         "definitions": {
             "notified": "DS-TB notification, as recorded in the source notified block",
             "drtb_notified": "DR-TB notification, as recorded in the separate source DR-TB block",
-            "referred_public_other": "Diagnosed TB referred to public or other facilities; do not automatically add to notifications",
+            "referred_public_other": "Section 17 Spoke referrals out for treatment; included in effective notified reporting totals, but retained separately in source",
             "drtb_regimens": "DR-TB started on treatment by regimen; breakdown, not an additional notification count"
         },
     }
@@ -2018,6 +2018,33 @@ def log_upload(
     conn.close()
 
 
+
+def apply_spoke_referral_notification_rule(indicators: Dict[str, Any]) -> Dict[str, Any]:
+    """Reporting view: referrals are Spoke notifications, never Hub notifications.
+
+    Source counts remain unchanged in the stored snapshot. This is idempotent,
+    including for records uploaded before the reporting rule was introduced.
+    """
+    if not isinstance(indicators, dict):
+        return indicators
+    totals = indicators.get("totals")
+    if not isinstance(totals, dict):
+        return indicators
+    referrals = clean_number(totals.get("referred_public_other", 0))
+    providers = indicators.get("by_provider") or {}
+    raw_notified = clean_number(sum(
+        clean_number((providers.get(k) or {}).get("notified", 0))
+        for k in ("facility", "pmv", "community", "lab", "tba")
+    )) if providers else clean_number(totals.get("notified_source", totals.get("notified", 0)))
+    totals["notified_source"] = raw_notified
+    totals["notified"] = clean_number(raw_notified + referrals)
+    totals["spoke_referred_notified"] = referrals
+    definitions = indicators.setdefault("definitions", {})
+    definitions["notified"] = "Source notified (Hub + Spoke) plus Section 17 Spoke referrals out for treatment"
+    definitions["spoke_referred_notified"] = "Section 17 referred out, attributed to Spoke collectively, not individual provider types"
+    return indicators
+
+
 @app.get("/api/performance")
 def get_performance(
     state: Optional[str] = None,
@@ -2042,7 +2069,7 @@ def get_performance(
         ).fetchall()
         return {"count": len(rows), "facilities": [
             {**{k: v for k, v in dict(row).items() if k != "indicators_json"},
-             "indicators": json.loads(row["indicators_json"])} for row in rows
+             "indicators": apply_spoke_referral_notification_rule(json.loads(row["indicators_json"]))} for row in rows
         ]}
     finally:
         conn.close()
