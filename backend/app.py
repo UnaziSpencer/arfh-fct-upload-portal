@@ -1224,6 +1224,9 @@ DSTB_CONTACT_TAB_BY_MONTH = {
     "July": "DSTB_CTracing_Jul", "Jul": "DSTB_CTracing_Jul",
     "August": "DSTB_CTracing_Aug", "Aug": "DSTB_CTracing_Aug",
     "September": "DSTB_CTracing_Sep", "Sep": "DSTB_CTracing_Sep",
+    "October": "DSTB_CTracing_Oct", "Oct": "DSTB_CTracing_Oct",
+    "November": "DSTB_CTracing_Nov", "Nov": "DSTB_CTracing_Nov",
+    "December": "DSTB_CTracing_Dec", "Dec": "DSTB_CTracing_Dec",
 }
 
 def extract_u5_ge5(df: pd.DataFrame, male_row: int, female_row: int) -> List[float]:
@@ -1319,7 +1322,7 @@ def validate_drtb_and_contact(df: pd.DataFrame) -> List[str]:
 def open_dstb_contact_sheet(workbook, report_month: str):
     tab = DSTB_CONTACT_TAB_BY_MONTH.get(str(report_month).strip())
     if not tab:
-        raise HTTPException(status_code=400, detail=f"DSTB contact investigation is configured for Q3 months only: {report_month}")
+        raise HTTPException(status_code=400, detail=f"DSTB contact investigation tab is not configured for month: {report_month}")
     try:
         return workbook.worksheet(tab), tab
     except Exception as exc:
