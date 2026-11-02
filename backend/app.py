@@ -69,6 +69,12 @@ STATE_MASTER_WORKBOOK_IDS = {
     ("Kwara", "2026", "Q3"): "1u8wC4NW7ZavHIpW3_xXl-upPp80aEVE9aKCOZEAeAN8",
     ("Nasarawa", "2026", "Q3"): "1D52Ark09Il1ymIPYjQMmrCvrShhMQJTOnqhtLbtqQkU",
     ("Rivers", "2026", "Q3"): "14woQRg-qC-QKVgTjwUkCuHhedcgwBOOz1zginXUn4b8",
+    ("Ekiti", "2026", "Q4"): "1rwa4zvfRDRNpj8AyFz3jmn_4xB_AdPZFhWqH4ZGT7KM",
+    ("FCT", "2026", "Q4"): "130K26iW2i9Rbxh1HQgMm3AEa2fQud3nV3M1pIIKEnBM",
+    ("Kogi", "2026", "Q4"): "1G0gnGcwWYz_SglLOYZM8foAAIGWEjD24H8H8L8M8kB4",
+    ("Kwara", "2026", "Q4"): "15BiJeKE1lDHWBTRLCUeNQ_XB7UMg5CzWQu2UywJdF3Y",
+    ("Nasarawa", "2026", "Q4"): "1NIpHd9tpQoIJqlzZcMhTEkyxAYrc408XI708nrz7xDg",
+    ("Rivers", "2026", "Q4"): "1l-_Vw2uH_lorHuRC-N2BaLhW_M7rC0UDczfmuAyR0IU",
 }
 
 MONTH_TO_TAB = {
@@ -2067,8 +2073,34 @@ def get_performance(
             "updated_at, indicators_json FROM facility_performance" + where +
             " ORDER BY state, lga, facility_name LIMIT 1000", tuple(params)
         ).fetchall()
+        # Month-specific historical ownership; do not infer an LC from today's roster.
+        historical_lcs = {}
+        if os.getenv("DATABASE_URL", "").strip():
+            try:
+                history = conn.cursor().execute(
+                    "SELECT report_year, report_month, state, lga, facility_name, lc_name "
+                    "FROM lc_facility_assignments_history WHERE report_year = ?", ("2026",)
+                ).fetchall()
+                def lc_key(value):
+                    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold().replace("&", "and"))
+                historical_lcs = {
+                    (str(x["report_year"]), lc_key(x["report_month"]), lc_key(x["state"]),
+                     lc_key(x["lga"]), lc_key(x["facility_name"])): x["lc_name"]
+                    for x in history
+                }
+            except Exception as exc:
+                # Only tolerate the history table not existing yet; never hide other DB errors.
+                if getattr(exc, "sqlstate", None) != "42P01":
+                    raise
+                conn._connection.rollback()
+        def assigned_lc(row):
+            def key(value):
+                return re.sub(r"[^a-z0-9]", "", str(value or "").casefold().replace("&", "and"))
+            return historical_lcs.get((str(row["report_year"]), key(row["report_month"]),
+                                       key(row["state"]), key(row["lga"]), key(row["facility_name"])))
         return {"count": len(rows), "facilities": [
             {**{k: v for k, v in dict(row).items() if k != "indicators_json"},
+             "historical_lc": assigned_lc(row),
              "indicators": apply_spoke_referral_notification_rule(json.loads(row["indicators_json"]))} for row in rows
         ]}
     finally:
